@@ -469,6 +469,11 @@ impl NftReward {
 
         Ok(())
     }
+
+    /// Returns the contract version.
+    pub fn contract_version() -> u32 {
+        1
+    }
 }
 
 #[cfg(test)]

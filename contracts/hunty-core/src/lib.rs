@@ -1226,6 +1226,11 @@ impl HuntyCore {
             average_score,
         })
     }
+
+    /// Returns the contract version.
+    pub fn contract_version() -> u32 {
+        1
+    }
 }
 
 mod errors;

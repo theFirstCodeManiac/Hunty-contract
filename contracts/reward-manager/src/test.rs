@@ -1140,4 +1140,9 @@ mod test {
             assert_eq!(result, Err(RewardErrorCode::NotInitialized));
         });
     }
+
+    #[test]
+    fn test_contract_version() {
+        assert_eq!(RewardManager::contract_version(), 1);
+    }
 }
