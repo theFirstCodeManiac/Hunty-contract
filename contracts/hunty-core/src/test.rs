@@ -10,7 +10,7 @@ mod test {
     // Bring Soroban testutils traits into scope (generate addresses, set ledger info, register contracts).
     use crate::errors::{HuntError, HuntErrorCode};
     use crate::storage::Storage;
-    use crate::types::HuntStatus;
+    use crate::types::{ClueInfo, HuntStatus};
     use crate::HuntyCore;
     use nft_reward::{NftMetadata, NftReward};
     use reward_manager::RewardManager;
@@ -590,10 +590,19 @@ mod test {
             HuntyCore::get_clue(env.clone(), hid, 1).unwrap()
         });
 
-        assert_eq!(info.question, question);
-        assert_eq!(info.points, 7);
-        assert!(info.is_required);
-        // ClueInfo has no answer_hash field — we never expose it.
+        // Prove at compile-time that `ClueInfo` has exactly these fields, and NO `answer_hash` field.
+        // The raw `Clue` (with hash) cannot be fetched through the public API (`get_clue` returns `ClueInfo`).
+        let ClueInfo {
+            clue_id,
+            question: ret_question,
+            points,
+            is_required,
+        } = info;
+
+        assert_eq!(clue_id, 1);
+        assert_eq!(ret_question, question);
+        assert_eq!(points, 7);
+        assert!(is_required);
     }
 
     #[test]
@@ -1349,8 +1358,6 @@ mod test {
             let err =
                 HuntyCore::register_player(env.clone(), hunt_id, player.clone()).unwrap_err();
             assert_eq!(err, HuntErrorCode::DuplicateRegistration);
-
-            Ok(())
         });
     }
 
