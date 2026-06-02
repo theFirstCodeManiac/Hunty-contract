@@ -14,6 +14,8 @@ use soroban_sdk::{
 
 const MAX_QUESTION_LENGTH: u32 = 2000;
 const MAX_ANSWER_LENGTH: u32 = 256;
+const MAX_TITLE_LENGTH: u32 = 200;
+const MAX_DESCRIPTION_LENGTH: u32 = 2000;
 const MAX_CLUES_PER_HUNT: u32 = 100;
 /// Maximum number of leaderboard entries returned (gas and UX limit).
 const MAX_LEADERBOARD_SIZE: u32 = 20;
@@ -66,13 +68,11 @@ impl HuntyCore {
         if title_len == 0 {
             return Err(HuntErrorCode::InvalidTitle);
         }
-        const MAX_TITLE_LENGTH: u32 = 200;
         if title_len > MAX_TITLE_LENGTH {
             return Err(HuntErrorCode::InvalidTitle);
         }
 
         // Validate description
-        const MAX_DESCRIPTION_LENGTH: u32 = 2000;
         if description.len() > MAX_DESCRIPTION_LENGTH {
             return Err(HuntErrorCode::InvalidDescription);
         }
@@ -121,6 +121,42 @@ impl HuntyCore {
             .publish((Symbol::new(&env, "HuntCreated"), hunt_id), event);
 
         Ok(hunt_id)
+    }
+
+    /// Updates a draft hunt's title and description. Only the hunt creator can update it.
+    pub fn update_hunt(
+        env: Env,
+        hunt_id: u64,
+        caller: Address,
+        title: String,
+        description: String,
+    ) -> Result<(), HuntErrorCode> {
+        caller.require_auth();
+
+        let mut hunt = Storage::get_hunt(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
+
+        if caller != hunt.creator {
+            return Err(HuntErrorCode::Unauthorized);
+        }
+
+        if hunt.status != HuntStatus::Draft {
+            return Err(HuntErrorCode::InvalidHuntStatus);
+        }
+
+        let title_len = title.len();
+        if title_len == 0 || title_len > MAX_TITLE_LENGTH {
+            return Err(HuntErrorCode::InvalidTitle);
+        }
+
+        if description.len() > MAX_DESCRIPTION_LENGTH {
+            return Err(HuntErrorCode::InvalidDescription);
+        }
+
+        hunt.title = title;
+        hunt.description = description;
+        Storage::save_hunt(&env, &hunt);
+
+        Ok(())
     }
 
     /// Adds a clue to a hunt. Only the hunt creator can add clues.
