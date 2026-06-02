@@ -148,7 +148,7 @@ mod test {
         let creator = Address::generate(&env);
         let title = String::from_str(&env, "Timed Hunt");
         let description = String::from_str(&env, "A hunt with an end time");
-        let end_time = 1000000u64;
+        let end_time = 1_700_086_400u64; // 1 day in the future
 
         let hunt = with_core_contract(&env, |env, _cid| {
             let hunt_id = HuntyCore::create_hunt(
@@ -164,6 +164,42 @@ mod test {
         });
         assert_eq!(hunt.end_time, end_time);
     }
+
+    #[test]
+    fn test_create_hunt_invalid_end_time() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_700_000_000);
+        let creator = Address::generate(&env);
+        let title = String::from_str(&env, "Expired Hunt");
+        let description = String::from_str(&env, "A hunt with an expired end time");
+        let end_time = 1_700_000_000; // equal to current time (invalid)
+
+        let result = with_core_contract(&env, |env, _cid| {
+            HuntyCore::create_hunt(
+                env.clone(),
+                creator.clone(),
+                title.clone(),
+                description.clone(),
+                None,
+                Some(end_time),
+            )
+        });
+        assert_eq!(result, Err(HuntErrorCode::InvalidEndTime));
+
+        let end_time_past = 1_699_999_999; // in the past (invalid)
+        let result_past = with_core_contract(&env, |env, _cid| {
+            HuntyCore::create_hunt(
+                env.clone(),
+                creator.clone(),
+                title.clone(),
+                description.clone(),
+                None,
+                Some(end_time_past),
+            )
+        });
+        assert_eq!(result_past, Err(HuntErrorCode::InvalidEndTime));
+    }
+
 
     #[test]
     fn test_create_hunt_empty_title() {

@@ -74,6 +74,13 @@ impl HuntyCore {
         // Get current timestamp
         let current_time = env.ledger().timestamp();
 
+        // Validate end_time
+        if let Some(et) = end_time {
+            if et > 0 && et <= current_time {
+                return Err(HuntErrorCode::InvalidEndTime);
+            }
+        }
+
         // Generate unique hunt ID
         let hunt_id = Storage::next_hunt_id(&env);
 
