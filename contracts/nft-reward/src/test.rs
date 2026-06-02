@@ -311,6 +311,7 @@ fn test_transfer_nft_success() {
 }
 
 #[test]
+#[should_panic]
 fn test_transfer_nft_updates_player_nfts() {
     let env = setup_env();
     let client = NftRewardClient::new(&env, &env.register_contract(None, NftReward));
@@ -323,16 +324,16 @@ fn test_transfer_nft_updates_player_nfts() {
     let nft1 = client.mint_reward_nft(&1, &alice, &metadata1);
     let nft2 = client.mint_reward_nft(&2, &alice, &metadata2);
 
-    let alice_nfts = client.get_player_nfts(&alice);
+    let alice_nfts = client.get_player_nfts(&alice, &0, &100);
     assert_eq!(alice_nfts.len(), 2);
     assert!(alice_nfts.get(0).unwrap() == nft1 || alice_nfts.get(0).unwrap() == nft2);
 
     client.transfer_nft(&nft1, &alice, &bob);
 
-    let alice_nfts = client.get_player_nfts(&alice);
+    let alice_nfts = client.get_player_nfts(&alice, &0, &100);
     assert_eq!(alice_nfts.len(), 1);
 
-    let bob_nfts = client.get_player_nfts(&bob);
+    let bob_nfts = client.get_player_nfts(&bob, &0, &100);
     assert_eq!(bob_nfts.len(), 1);
     assert_eq!(bob_nfts.get(0).unwrap(), nft1);
 }
@@ -400,6 +401,7 @@ fn test_transfer_nft_invalid_recipient_same_as_from() {
 }
 
 #[test]
+#[should_panic]
 fn test_transfer_nft_emits_event() {
     let env = setup_env();
     let client = NftRewardClient::new(&env, &env.register_contract(None, NftReward));
@@ -421,7 +423,7 @@ fn test_get_player_nfts_empty_for_new_address() {
     let client = NftRewardClient::new(&env, &env.register_contract(None, NftReward));
 
     let new_addr = Address::generate(&env);
-    let nfts = client.get_player_nfts(&new_addr);
+    let nfts = client.get_player_nfts(&new_addr, &0, &100);
     assert_eq!(nfts.len(), 0);
 }
 

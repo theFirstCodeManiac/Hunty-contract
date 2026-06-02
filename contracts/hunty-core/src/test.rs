@@ -1349,8 +1349,6 @@ mod test {
             let err =
                 HuntyCore::register_player(env.clone(), hunt_id, player.clone()).unwrap_err();
             assert_eq!(err, HuntErrorCode::DuplicateRegistration);
-
-            Ok(())
         });
     }
 
@@ -2239,7 +2237,7 @@ mod test {
         let minted_nft_id = status.nft_id.unwrap();
         let nft_client =
             nft_reward::NftRewardClient::new(&env, &nft_contract_id);
-        let owned_nfts = nft_client.get_player_nfts(&player);
+        let owned_nfts = nft_client.get_player_nfts(&player, &0, &100);
         assert!(owned_nfts.len() >= 1);
         assert!(owned_nfts.iter().any(|id| id == minted_nft_id));
 
@@ -2402,9 +2400,9 @@ mod test {
         });
 
         let nft_client = nft_reward::NftRewardClient::new(&env, &nft_contract_id);
-        let nfts1 = nft_client.get_player_nfts(&player1);
-        let nfts2 = nft_client.get_player_nfts(&player2);
-        let nfts3 = nft_client.get_player_nfts(&player3);
+        let nfts1 = nft_client.get_player_nfts(&player1, &0, &100);
+        let nfts2 = nft_client.get_player_nfts(&player2, &0, &100);
+        let nfts3 = nft_client.get_player_nfts(&player3, &0, &100);
         assert!(nfts1.len() >= 1);
         assert!(nfts2.len() >= 1);
         assert!(nfts3.len() >= 1);
