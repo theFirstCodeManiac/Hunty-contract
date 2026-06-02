@@ -3157,7 +3157,48 @@ mod test {
     }
 
     #[test]
+    fn test_set_reward_manager_non_admin_fails() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_700_000_000);
+
+        let admin = Address::generate(&env);
+        let non_admin = Address::generate(&env);
+
+        // Deploy HuntyCore
+        let core_id = env.register_contract(None, HuntyCore);
+
+        // Deploy RewardManager
+        let reward_manager_id = env.register(RewardManager, ());
+        let token_admin = Address::generate(&env);
+        let token_contract = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let token_address = token_contract.address();
+
+        env.as_contract(&reward_manager_id, || {
+            RewardManager::initialize(env.clone(), token_admin.clone(), token_address.clone())
+                .unwrap();
+        });
+
+        // Non-admin tries to set RewardManager on HuntyCore.
+        // Access control should cause Unauthorized failure.
+        // (env.as_contract(&addr,..) makes invoker==addr)
+        let result = env.as_contract(&non_admin, || {
+            HuntyCore::set_reward_manager(env.clone(), reward_manager_id.clone())
+        });
+
+        assert_eq!(result, Err(HuntErrorCode::Unauthorized));
+
+        // Sanity: admin should be able to set (auth succeeds when invoker==admin)
+        let ok = env.as_contract(&admin, || {
+            HuntyCore::set_reward_manager(env.clone(), reward_manager_id.clone())
+        });
+        assert_eq!(ok, Ok(()));
+    }
+
+
+
+    #[test]
     fn test_complete_hunt_invalid_status() {
+
         let env = Env::default();
         env.ledger().set_timestamp(1_700_000_000);
         let creator = Address::generate(&env);

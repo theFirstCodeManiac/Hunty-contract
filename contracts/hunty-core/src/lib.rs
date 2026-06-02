@@ -472,9 +472,17 @@ impl HuntyCore {
     }
 
     /// Sets the RewardManager contract address for cross-contract reward distribution.
-    pub fn set_reward_manager(env: Env, reward_manager: Address) {
+    ///
+    /// Access control: only the admin (or contract invoker) is allowed to set this.
+    pub fn set_reward_manager(env: Env, reward_manager: Address) -> Result<(), HuntErrorCode> {
+        // Require invoker authorization.
+        // (This is the auth gate that was missing before.)
+        env.invoker().require_auth();
+
         Storage::set_reward_manager(&env, &reward_manager);
+        Ok(())
     }
+
 
     /// Completes a hunt for a player and distributes rewards.
     ///
