@@ -897,6 +897,32 @@ impl HuntyCore {
         best_idx
     }
 
+        /// Returns a list of all hunts (paginated).
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `start` - Starting index (0-based)
+    /// * `limit` - Maximum number of hunts to return (capped at 50 for gas safety)
+    ///
+    /// # Returns
+    /// Vec of Hunt structs
+    pub fn list_hunts(env: Env, start: u32, limit: u32) -> Vec<Hunt> {
+        let counter = Storage::get_hunt_counter(&env);
+        let actual_limit = limit.min(50).min(counter as u32); // Safety cap
+
+        let mut hunts = Vec::new(&env);
+        let end = (start + actual_limit).min(counter as u32);
+
+        for i in start..end {
+            let hunt_id = (i as u64) + 1; // Hunt IDs start from 1
+            if let Some(hunt) = Storage::get_hunt(&env, hunt_id) {
+                hunts.push_back(hunt);
+            }
+        }
+
+        hunts
+    }
+
     /// Returns aggregate statistics for a hunt (read-only): total players, completion rate, average score.
     /// Returns error if hunt does not exist.
     pub fn get_hunt_statistics(
