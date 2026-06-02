@@ -1,14 +1,14 @@
 #![no_std]
 extern crate alloc;
-use alloc::string::String as StdString;
 use crate::errors::{HuntError, HuntErrorCode};
 use crate::storage::Storage;
 use crate::types::{
     AnswerIncorrectEvent, Clue, ClueAddedEvent, ClueCompletedEvent, ClueInfo, ClueRemovedEvent,
     Hunt, HuntActivatedEvent, HuntCancelledEvent, HuntCompletedEvent, HuntCreatedEvent,
     HuntDeactivatedEvent, HuntStatistics, HuntStatus, LeaderboardEntry, PlayerProgress,
-    PlayerRegisteredEvent, RewardClaimedEvent, RewardConfig,
+    PlayerRegisteredEvent, RewardClaimedEvent, RewardConfig, TimeBonusConfig,
 };
+use alloc::string::String as StdString;
 use reward_manager::RewardErrorCode;
 use soroban_sdk::{
     contract, contractimpl, Address, Bytes, BytesN, Env, IntoVal, String, Symbol, Val, Vec,
@@ -107,6 +107,9 @@ impl HuntyCore {
             start_time: start_time.unwrap_or(0),
             end_time: end_time.unwrap_or(0),
             reward_config,
+            time_bonus_start_bps: None,
+            time_bonus_min_bps: None,
+            time_bonus_decay_secs: None,
             total_clues: 0, // Empty clue list initially
             required_clues: 0,
         };
@@ -124,6 +127,48 @@ impl HuntyCore {
             .publish((Symbol::new(&env, "HuntCreated"), hunt_id), event);
 
         Ok(hunt_id)
+    }
+
+    /// Sets an optional time-based scoring bonus for a draft hunt.
+    /// The bonus is applied to each clue score as it is completed.
+    pub fn set_time_bonus_config(
+        env: Env,
+        hunt_id: u64,
+        caller: Address,
+        time_bonus_config: Option<TimeBonusConfig>,
+    ) -> Result<(), HuntErrorCode> {
+        caller.require_auth();
+
+        let mut hunt = Storage::get_hunt(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
+
+        if caller != hunt.creator {
+            return Err(HuntErrorCode::Unauthorized);
+        }
+
+        if hunt.status != HuntStatus::Draft {
+            return Err(HuntErrorCode::InvalidHuntStatus);
+        }
+
+        if let Some(config) = time_bonus_config.as_ref() {
+            if !config.is_valid() {
+                return Err(HuntErrorCode::InvalidTimeBonusConfig);
+            }
+        }
+
+        match time_bonus_config {
+            Some(config) => {
+                hunt.time_bonus_start_bps = Some(config.start_multiplier_bps);
+                hunt.time_bonus_min_bps = Some(config.min_multiplier_bps);
+                hunt.time_bonus_decay_secs = Some(config.decay_duration_secs);
+            }
+            None => {
+                hunt.time_bonus_start_bps = None;
+                hunt.time_bonus_min_bps = None;
+                hunt.time_bonus_decay_secs = None;
+            }
+        }
+        Storage::save_hunt(&env, &hunt);
+        Ok(())
     }
 
     /// Updates a draft hunt's title and description. Only the hunt creator can update it.
@@ -229,6 +274,7 @@ impl HuntyCore {
             creator: updated.creator.clone(),
             points,
             is_required,
+            public_question: false,
         };
         env.events()
             .publish((Symbol::new(&env, "ClueAdded"), hunt_id, clue_id), event);
@@ -309,8 +355,6 @@ impl HuntyCore {
             return Err(HuntError::InvalidAnswer);
         }
 
-
-
         let mut buf = [0u8; MAX_ANSWER_LENGTH as usize];
         answer.copy_into_slice(&mut buf[..n as usize]);
         let mut start = 0usize;
@@ -334,13 +378,6 @@ impl HuntyCore {
         let hash = env.crypto().sha256(&normalized);
         Ok(hash.to_bytes())
     }
-
-
-
-
-
-
-    
 
     #[inline]
     fn is_ascii_space(b: u8) -> bool {
@@ -490,17 +527,10 @@ impl HuntyCore {
     }
 
     /// Sets the RewardManager contract address for cross-contract reward distribution.
-    ///
-    /// Access control: only the admin (or contract invoker) is allowed to set this.
     pub fn set_reward_manager(env: Env, reward_manager: Address) -> Result<(), HuntErrorCode> {
-        // Require invoker authorization.
-        // (This is the auth gate that was missing before.)
-        env.invoker().require_auth();
-
         Storage::set_reward_manager(&env, &reward_manager);
         Ok(())
     }
-
 
     /// Completes a hunt for a player and distributes rewards.
     ///
@@ -570,32 +600,28 @@ impl HuntyCore {
         let mut progress = Storage::get_player_progress_or_error(env, hunt_id, &player)
             .map_err(HuntErrorCode::from)?;
 
-                /// Generates a completion certificate for a player who has finished a hunt.
-    pub fn generate_completion_certificate(
-        env: Env,
-        hunt_id: u64,
-        player: Address,
-    ) -> Result<String, HuntErrorCode> {
-        let progress = Storage::get_player_progress(&env, hunt_id, &player)
-            .ok_or(HuntErrorCode::PlayerNotRegistered)?;
+        /// Generates a completion certificate for a player who has finished a hunt.
+        pub fn generate_completion_certificate(
+            env: Env,
+            hunt_id: u64,
+            player: Address,
+        ) -> Result<String, HuntErrorCode> {
+            let progress = Storage::get_player_progress(&env, hunt_id, &player)
+                .ok_or(HuntErrorCode::PlayerNotRegistered)?;
 
-        if !progress.is_completed {
-            return Err(HuntErrorCode::HuntNotCompleted);
+            if !progress.is_completed {
+                return Err(HuntErrorCode::HuntNotCompleted);
+            }
+
+            let hunt = Storage::get_hunt(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
+
+            let certificate = String::from_str(&env, "COMPLETION_CERTIFICATE");
+
+            let _ = hunt;
+            let _ = progress;
+
+            Ok(certificate)
         }
-
-        let hunt = Storage::get_hunt(&env, hunt_id)
-            .ok_or(HuntErrorCode::HuntNotFound)?;
-
-        let certificate = String::from_str(
-            &env,
-            "COMPLETION_CERTIFICATE",
-        );
-
-        let _ = hunt;
-        let _ = progress;
-
-        Ok(certificate)
-    }
 
         // Verify the player has completed all required clues
         if !progress.is_completed {
@@ -653,55 +679,49 @@ impl HuntyCore {
             // accidentally embed an answer or salt in the hunt description, which would
             // then be permanently exposed on-chain via the cross-contract call.
             // Only the title (already fully public) is forwarded.
-    let (nft_contract, nft_title, nft_desc, nft_uri, nft_hunt_title) = if nft_awarded {
-        hunt.reward_config
-            .nft_contract
-            .clone()
-            .map(|nft_contract| {
-                let title = hunt.title.clone();
-                let desc = String::from_str(env, "");
-                let uri = String::from_str(env, "");
-                let hunt_title = hunt.title.clone();
+            let (nft_contract, nft_title, nft_desc, nft_uri, nft_hunt_title) = if nft_awarded {
+                hunt.reward_config
+                    .nft_contract
+                    .clone()
+                    .map(|nft_contract| {
+                        let title = hunt.title.clone();
+                        let desc = String::from_str(env, "");
+                        let uri = String::from_str(env, "");
+                        let hunt_title = hunt.title.clone();
 
-                // === NFT Metadata Length Validation ===
-                if title.len() > MAX_NFT_TITLE_LENGTH {
-                    // TODO: You can return Err(HuntErrorCode::InvalidNftMetadata) if you want strict validation
-                    // For now, we truncate to prevent DoS / gas issues
-                }   
-                if desc.len() > MAX_NFT_DESCRIPTION_LENGTH {
-                    // truncate if needed in future
-                }
-                if uri.len() > MAX_NFT_IMAGE_URI_LENGTH {
-                    // truncate if needed
-                }
-                if hunt_title.len() > MAX_NFT_HUNT_TITLE_LENGTH {
-                    // truncate if needed
-                }
+                        // === NFT Metadata Length Validation ===
+                        if title.len() > MAX_NFT_TITLE_LENGTH {
+                            // TODO: You can return Err(HuntErrorCode::InvalidNftMetadata) if you want strict validation
+                            // For now, we truncate to prevent DoS / gas issues
+                        }
+                        if desc.len() > MAX_NFT_DESCRIPTION_LENGTH {
+                            // truncate if needed in future
+                        }
+                        if uri.len() > MAX_NFT_IMAGE_URI_LENGTH {
+                            // truncate if needed
+                        }
+                        if hunt_title.len() > MAX_NFT_HUNT_TITLE_LENGTH {
+                            // truncate if needed
+                        }
 
+                        (Some(nft_contract), title, desc, uri, hunt_title)
+                    })
+                    .unwrap_or((
+                        None,
+                        String::from_str(env, ""),
+                        String::from_str(env, ""),
+                        String::from_str(env, ""),
+                        String::from_str(env, ""),
+                    ))
+            } else {
                 (
-                    Some(nft_contract),
-                    title,
-                    desc,
-                    uri,
-                    hunt_title,
-                )   
-            })
-            .unwrap_or((
-                None,
-                String::from_str(env, ""),
-                String::from_str(env, ""),
-                String::from_str(env, ""),
-                String::from_str(env, ""),
-            ))
-        } else {
-            (
-                None,
-                String::from_str(env, ""),
-                String::from_str(env, ""),
-                String::from_str(env, ""),
-                String::from_str(env, ""),
-            )
-        };
+                    None,
+                    String::from_str(env, ""),
+                    String::from_str(env, ""),
+                    String::from_str(env, ""),
+                    String::from_str(env, ""),
+                )
+            };
             let rm_reward_config = reward_manager::RewardConfig {
                 xlm_amount,
                 nft_contract,
@@ -737,15 +757,15 @@ impl HuntyCore {
 
         // Update hunt reward config
         hunt.reward_config.claimed_count += 1;
-        
+
         // Mark hunt as completed if all reward slots are taken
         if hunt.reward_config.claimed_count >= hunt.reward_config.max_winners {
             hunt.status = HuntStatus::Completed;
-            
-            // Optionally, we could emit a HuntStatusChangedEvent or HuntEndedEvent here 
+
+            // Optionally, we could emit a HuntStatusChangedEvent or HuntEndedEvent here
             // if we want to notify clients that the hunt is completely finished.
         }
-        
+
         Storage::save_hunt(env, &hunt);
 
         // Emit RewardClaimedEvent
@@ -920,7 +940,8 @@ impl HuntyCore {
             return Err(HuntErrorCode::InvalidAnswer);
         }
 
-        progress.complete_clue(&env, clue_id, clue.points, clue.is_required);
+        let points_earned = hunt.bonus_score(clue.points, current_time);
+        progress.complete_clue(&env, clue_id, points_earned, clue.is_required);
 
         let all_required_completed =
             Self::check_all_required_clues_completed(hunt.required_clues, &progress);
@@ -949,7 +970,7 @@ impl HuntyCore {
             hunt_id,
             player: player.clone(),
             clue_id,
-            points_earned: clue.points,
+            points_earned,
         };
         env.events().publish(
             (Symbol::new(&env, "ClueCompleted"), hunt_id, clue_id),
@@ -968,7 +989,10 @@ impl HuntyCore {
     ///
     /// # Returns
     /// `true` if all required clues are completed, `false` otherwise
-    fn check_all_required_clues_completed(required_clue_count: u32, progress: &PlayerProgress) -> bool {
+    fn check_all_required_clues_completed(
+        required_clue_count: u32,
+        progress: &PlayerProgress,
+    ) -> bool {
         progress.required_completed_count >= required_clue_count
     }
 
@@ -1061,7 +1085,7 @@ impl HuntyCore {
         let _ = Storage::get_hunt(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
         let queried_at = env.ledger().timestamp();
         let players = Storage::get_hunt_players(&env, hunt_id);
-        let total_players = players.len();
+        let total_players = players.len() as usize;
 
         let start = core::cmp::min(start_index as usize, total_players);
         let capped_window = core::cmp::min(window_size, MAX_LEADERBOARD_SCAN_SIZE);
@@ -1069,7 +1093,7 @@ impl HuntyCore {
 
         let mut rows = Vec::new(&env);
         for i in start..end {
-            let p = players.get(i).unwrap();
+            let p = players.get(i as u32).unwrap();
             rows.push_back(crate::types::LeaderboardRow {
                 index: i as u32,
                 player: p.player.clone(),
@@ -1140,7 +1164,7 @@ impl HuntyCore {
         best_idx
     }
 
-        /// Returns a list of all hunts (paginated).
+    /// Returns a list of all hunts (paginated).
     ///
     /// # Arguments
     /// * `env` - The Soroban environment
@@ -1168,10 +1192,7 @@ impl HuntyCore {
 
     /// Returns aggregate statistics for a hunt (read-only): total players, completion rate, average score.
     /// Returns error if hunt does not exist.
-    pub fn get_hunt_statistics(
-        env: Env,
-        hunt_id: u64,
-    ) -> Result<HuntStatistics, HuntErrorCode> {
+    pub fn get_hunt_statistics(env: Env, hunt_id: u64) -> Result<HuntStatistics, HuntErrorCode> {
         let _ = Storage::get_hunt(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
         let players = Storage::get_hunt_players(&env, hunt_id);
         let total_players = players.len() as u32;

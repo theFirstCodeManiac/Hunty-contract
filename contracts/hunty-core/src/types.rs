@@ -23,6 +23,20 @@ pub struct RewardConfig {
     pub nft_tier: u32,
 }
 
+/// Optional time-based scoring bonus for a hunt.
+/// Multipliers are stored in basis points to avoid floating point math:
+/// 10_000 = 1.0x, 15_000 = 1.5x, 20_000 = 2.0x.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TimeBonusConfig {
+    /// Multiplier applied at activation time.
+    pub start_multiplier_bps: u32,
+    /// Minimum multiplier after the decay period completes.
+    pub min_multiplier_bps: u32,
+    /// Number of seconds after activation over which the multiplier decays.
+    pub decay_duration_secs: u64,
+}
+
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct Hunt {
@@ -36,6 +50,9 @@ pub struct Hunt {
     pub start_time: u64,
     pub end_time: u64,
     pub reward_config: RewardConfig,
+    pub time_bonus_start_bps: Option<u32>,
+    pub time_bonus_min_bps: Option<u32>,
+    pub time_bonus_decay_secs: Option<u64>,
     pub total_clues: u32,
     pub required_clues: u32,
 }
@@ -213,6 +230,46 @@ impl Hunt {
     pub fn has_rewards_available(&self) -> bool {
         self.reward_config.claimed_count < self.reward_config.max_winners
     }
+
+    pub fn time_bonus_multiplier_bps(&self, current_time: u64) -> u32 {
+        match (
+            self.time_bonus_start_bps,
+            self.time_bonus_min_bps,
+            self.time_bonus_decay_secs,
+        ) {
+            (Some(start), Some(min), Some(duration)) => {
+                let config = TimeBonusConfig {
+                    start_multiplier_bps: start,
+                    min_multiplier_bps: min,
+                    decay_duration_secs: duration,
+                };
+                let elapsed = current_time.saturating_sub(self.activated_at);
+                config.multiplier_bps_at(elapsed)
+            }
+            _ => 10_000,
+        }
+    }
+
+    pub fn time_bonus_config(&self) -> Option<TimeBonusConfig> {
+        match (
+            self.time_bonus_start_bps,
+            self.time_bonus_min_bps,
+            self.time_bonus_decay_secs,
+        ) {
+            (Some(start), Some(min), Some(duration)) => Some(TimeBonusConfig {
+                start_multiplier_bps: start,
+                min_multiplier_bps: min,
+                decay_duration_secs: duration,
+            }),
+            _ => None,
+        }
+    }
+
+    pub fn bonus_score(&self, points: u32, current_time: u64) -> u32 {
+        let multiplier_bps = self.time_bonus_multiplier_bps(current_time) as u128;
+        let scaled = (points as u128 * multiplier_bps) / 10_000;
+        core::cmp::min(scaled, u32::MAX as u128) as u32
+    }
 }
 
 impl RewardConfig {
@@ -241,6 +298,30 @@ impl RewardConfig {
         } else {
             self.xlm_pool / (self.max_winners as i128)
         }
+    }
+}
+
+impl TimeBonusConfig {
+    pub fn is_valid(&self) -> bool {
+        self.decay_duration_secs > 0
+            && self.start_multiplier_bps >= self.min_multiplier_bps
+            && self.min_multiplier_bps >= 10_000
+    }
+
+    pub fn multiplier_bps_at(&self, elapsed_secs: u64) -> u32 {
+        if self.decay_duration_secs == 0 {
+            return self.min_multiplier_bps;
+        }
+
+        if elapsed_secs >= self.decay_duration_secs {
+            return self.min_multiplier_bps;
+        }
+
+        let start = self.start_multiplier_bps as u128;
+        let min = self.min_multiplier_bps as u128;
+        let span = start.saturating_sub(min);
+        let decay = (span * elapsed_secs as u128) / self.decay_duration_secs as u128;
+        (start.saturating_sub(decay)) as u32
     }
 }
 
