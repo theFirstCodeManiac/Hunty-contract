@@ -1,6 +1,7 @@
 #![cfg_attr(not(test), no_std)]
 use soroban_sdk::{
-    contract, contractimpl, contracttype, Address, Env, Map, String, Symbol, Val, Vec,
+    contract, contractimpl, contracttype, symbol_short, Address, Env, Map, String, Symbol, Val,
+    Vec,
 };
 
 /// Core display metadata for an NFT (title, description, image URI).
@@ -433,7 +434,39 @@ impl NftReward {
         }
 
         Storage::remove_nft(&env, nft_id);
-        Storage::remove_nft_from_owner(&env, &owner, nft_id);
+
+        let count_key = (symbol_short!("ONFC"), owner.clone());
+        let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+        let exist_key = (symbol_short!("ONFX"), owner.clone(), nft_id);
+        if env.storage().persistent().has(&exist_key) {
+            let mut found = false;
+            for i in 0..count {
+                let entry_key = (symbol_short!("ONFT"), owner.clone(), i);
+                if let Some(stored_id) = env.storage().persistent().get::<_, u64>(&entry_key) {
+                    if stored_id == nft_id {
+                        let last_idx = count - 1;
+                        if i != last_idx {
+                            let last_key = (symbol_short!("ONFT"), owner.clone(), last_idx);
+                            if let Some(last_id) =
+                                env.storage().persistent().get::<_, u64>(&last_key)
+                            {
+                                env.storage().persistent().set(&entry_key, &last_id);
+                            }
+                            env.storage().persistent().remove(&last_key);
+                        } else {
+                            env.storage().persistent().remove(&entry_key);
+                        }
+                        found = true;
+                        break;
+                    }
+                }
+            }
+
+            if found {
+                env.storage().persistent().set(&count_key, &(count - 1));
+            }
+            env.storage().persistent().remove(&exist_key);
+        }
 
         env.events()
             .publish((Symbol::new(&env, "NftBurned"), nft_id), (nft_id, owner));
@@ -475,7 +508,38 @@ impl NftReward {
             return Err(crate::errors::NftErrorCode::SoulboundNft);
         }
 
-        Storage::remove_nft_from_owner(&env, &from_address, nft_id);
+        let count_key = (symbol_short!("ONFC"), from_address.clone());
+        let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+        let exist_key = (symbol_short!("ONFX"), from_address.clone(), nft_id);
+        if env.storage().persistent().has(&exist_key) {
+            let mut found = false;
+            for i in 0..count {
+                let entry_key = (symbol_short!("ONFT"), from_address.clone(), i);
+                if let Some(stored_id) = env.storage().persistent().get::<_, u64>(&entry_key) {
+                    if stored_id == nft_id {
+                        let last_idx = count - 1;
+                        if i != last_idx {
+                            let last_key = (symbol_short!("ONFT"), from_address.clone(), last_idx);
+                            if let Some(last_id) =
+                                env.storage().persistent().get::<_, u64>(&last_key)
+                            {
+                                env.storage().persistent().set(&entry_key, &last_id);
+                            }
+                            env.storage().persistent().remove(&last_key);
+                        } else {
+                            env.storage().persistent().remove(&entry_key);
+                        }
+                        found = true;
+                        break;
+                    }
+                }
+            }
+
+            if found {
+                env.storage().persistent().set(&count_key, &(count - 1));
+            }
+            env.storage().persistent().remove(&exist_key);
+        }
         nft.owner = to_address.clone();
         Storage::save_nft(&env, &nft);
         Storage::add_nft_to_owner(&env, &to_address, nft_id);

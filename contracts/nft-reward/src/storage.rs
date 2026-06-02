@@ -131,44 +131,6 @@ impl Storage {
         env.storage().persistent().set(&exist_key, &());
     }
 
-    /// Removes an NFT ID from the owner's index.
-    pub fn remove_nft_from_owner(env: &Env, owner: &Address, nft_id: u64) {
-        let count_key = Self::owner_nft_count_key(owner);
-        let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
-
-        let exist_key = Self::owner_nft_exist_key(owner, nft_id);
-        if !env.storage().persistent().has(&exist_key) {
-            return;
-        }
-
-        // Find the entry index and swap-remove with the last entry
-        let mut found = false;
-        for i in 0..count {
-            let entry_key = Self::owner_nft_entry_key(owner, i);
-            if let Some(stored_id) = env.storage().persistent().get::<_, u64>(&entry_key) {
-                if stored_id == nft_id {
-                    let last_idx = count - 1;
-                    if i != last_idx {
-                        let last_key = Self::owner_nft_entry_key(owner, last_idx);
-                        if let Some(last_id) = env.storage().persistent().get::<_, u64>(&last_key) {
-                            env.storage().persistent().set(&entry_key, &last_id);
-                        }
-                        env.storage().persistent().remove(&last_key);
-                    } else {
-                        env.storage().persistent().remove(&entry_key);
-                    }
-                    found = true;
-                    break;
-                }
-            }
-        }
-
-        if found {
-            env.storage().persistent().set(&count_key, &(count - 1));
-        }
-        env.storage().persistent().remove(&exist_key);
-    }
-
     /// Gets all NFT IDs owned by an address by reading individual entries.
     pub fn get_owner_nfts(env: &Env, owner: &Address) -> Vec<u64> {
         let count_key = Self::owner_nft_count_key(owner);
