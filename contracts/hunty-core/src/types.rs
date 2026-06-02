@@ -274,6 +274,7 @@ pub struct ClueAddedEvent {
     pub question: String,
     pub points: u32,
     pub is_required: bool,
+    pub public_question: bool,
 }
 
 /// Emitted when a player registers for an active hunt.
