@@ -460,7 +460,7 @@ fn test_burn_removes_nft_and_clears_owner_list() {
     let nft_id = client.mint_reward_nft(&1, &owner, &metadata);
     assert!(client.get_nft(&nft_id).is_some());
 
-    client.burn(&nft_id, &owner).unwrap();
+    client.burn(&nft_id, &owner);
 
     assert!(client.get_nft(&nft_id).is_none());
     assert_eq!(client.get_player_nfts(&owner).len(), 0);
