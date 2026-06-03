@@ -98,6 +98,7 @@ pub struct NftMetadataUpdatedEvent {
 }
 
 mod errors;
+pub use errors::NftErrorCode;
 mod storage;
 use storage::Storage;
 
