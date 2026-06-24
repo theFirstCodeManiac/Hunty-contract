@@ -555,6 +555,10 @@ impl HuntyCore {
     }
 
     pub fn cancel_hunt(env: Env, hunt_id: u64, caller: Address) -> Result<(), HuntErrorCode> {
+        // Require the caller to authorize. Without this, an attacker could spoof `caller`
+        // and cancel hunts by passing the creator address.
+        caller.require_auth();
+
         // Load hunt
         let mut hunt = Storage::get_hunt(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
 
@@ -562,6 +566,7 @@ impl HuntyCore {
         if caller != hunt.creator {
             return Err(HuntErrorCode::Unauthorized);
         }
+
 
         // Cannot cancel a completed hunt
         if hunt.status == HuntStatus::Completed {
