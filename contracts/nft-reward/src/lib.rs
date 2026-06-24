@@ -1,7 +1,7 @@
 #![cfg_attr(not(test), no_std)]
 use soroban_sdk::{
-    contract, contractimpl, contracttype, panic_with_error, Address, Env, Map, String, Symbol,
-    Val, Vec,
+    contract, contractimpl, contracttype, panic_with_error, symbol_short, Address, Env, Map,
+    String, Symbol, Val, Vec,
 };
 
 /// Core display metadata for an NFT (title, description, image URI).
@@ -28,12 +28,25 @@ pub struct NftMetadata {
 
 fn image_uri_is_valid(uri: &String) -> bool {
     // Accept non-empty URIs that start with https:// or ipfs://
-    let s = uri.clone();
-    let sstr = s.as_str();
-    if sstr.len() == 0 {
+    // soroban_sdk::String has no as_str(); compare via byte-level checks.
+    let len = uri.len();
+    if len == 0 {
         return false;
     }
-    sstr.starts_with("https://") || sstr.starts_with("ipfs://")
+    // Build byte slices for the prefixes and compare the leading bytes.
+    let https_prefix = b"https://";
+    let ipfs_prefix = b"ipfs://";
+    // Copy up to 8 bytes from the Soroban String into a local buffer.
+    let check_len: u32 = if len >= 8 { 8 } else { len };
+    let mut buf = [0u8; 8];
+    uri.copy_into_slice(&mut buf[..check_len as usize]);
+    let prefix8 = &buf[..check_len as usize];
+    if check_len >= 8 && prefix8 == https_prefix {
+        return true;
+    }
+    let check_len7: u32 = if len >= 7 { 7 } else { len };
+    let prefix7 = &buf[..check_len7 as usize];
+    check_len7 >= 7 && prefix7 == ipfs_prefix
 }
 
 /// Complete metadata returned by get_nft_metadata (includes NftData-derived fields).
@@ -134,7 +147,7 @@ impl NftReward {
     /// The unique NFT ID of the minted NFT
     pub fn mint_reward_nft(
         env: Env,
-        minter: Address,
+        _minter: Address,
         hunt_id: u64,
         player_address: Address,
         metadata: NftMetadata,
@@ -261,7 +274,6 @@ impl NftReward {
             nft_id,
             hunt_id,
             owner: player_address.clone(),
-            completion_player: player_address.clone(),
             metadata: metadata.clone(),
             transferable,
             minted_at,
@@ -274,6 +286,8 @@ impl NftReward {
             nft_id,
             hunt_id,
             owner: player_address,
+            rarity: nft_data.metadata.rarity,
+            tier: nft_data.metadata.tier,
             metadata,
             minted_at,
         };
