@@ -20,5 +20,5 @@ pub enum RewardErrorCode {
     /// A recursive distribution attempt was detected during an external XLM or NFT call.
     ReentrancyDetected = 14,
     /// The tracked pool balance diverged from the actual XLM token balance.
-    PoolBalanceDivergence = 15,
-}
+    DailyCapExceeded = 16,
+    GlobalDailyCapExceeded = 17,

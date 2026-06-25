@@ -8,6 +8,12 @@ impl Storage {
     const ADMIN_KEY: soroban_sdk::Symbol = symbol_short!("ADMIN");
     const XLM_TOKEN_KEY: soroban_sdk::Symbol = symbol_short!("XLMTKN");
     const NFT_CONTRACT_KEY: soroban_sdk::Symbol = symbol_short!("NFTADR");
+    // Daily spending caps
+    const DAILY_POOL_CAP_KEY: soroban_sdk::Symbol = symbol_short!("DPCAP");
+    const DAILY_GLOBAL_CAP_KEY: soroban_sdk::Symbol = symbol_short!("DGRCAP");
+    // Daily distribution tracking
+    const DAILY_POOL_DIST_KEY: soroban_sdk::Symbol = symbol_short!("DPDST");
+    const DAILY_GLOBAL_DIST_KEY: soroban_sdk::Symbol = symbol_short!("DGDST");
     const DISTRIBUTION_KEY: soroban_sdk::Symbol = symbol_short!("DIST");
     const DIST_RECORD_KEY: soroban_sdk::Symbol = symbol_short!("DREC");
     const POOL_KEY: soroban_sdk::Symbol = symbol_short!("POOL");
@@ -152,6 +158,50 @@ impl Storage {
     }
 
     pub fn get_total_xlm_distributed(env: &Env) -> i128 {
+        env.storage().persistent().get(&Self::TOTAL_XLM_DST_KEY).unwrap_or(0)
+    }
+
+    // Daily pool cap getters/setters
+    pub fn set_daily_pool_cap(env: &Env, hunt_id: u64, cap: i128) {
+        let key = (Self::DAILY_POOL_CAP_KEY, hunt_id);
+        env.storage().persistent().set(&key, &cap);
+    }
+
+    pub fn get_daily_pool_cap(env: &Env, hunt_id: u64) -> i128 {
+        let key = (Self::DAILY_POOL_CAP_KEY, hunt_id);
+        env.storage().persistent().get(&key).unwrap_or(0)
+    }
+
+    pub fn set_daily_global_cap(env: &Env, cap: i128) {
+        env.storage().persistent().set(&Self::DAILY_GLOBAL_CAP_KEY, &cap);
+    }
+
+    pub fn get_daily_global_cap(env: &Env) -> i128 {
+        env.storage().persistent().get(&Self::DAILY_GLOBAL_CAP_KEY).unwrap_or(0)
+    }
+
+    // Daily distribution tracking
+    pub fn add_daily_pool_distributed(env: &Env, hunt_id: u64, day: u64, amount: i128) {
+        let key = (Self::DAILY_POOL_DIST_KEY, hunt_id, day);
+        let cur = env.storage().persistent().get(&key).unwrap_or(0);
+        env.storage().persistent().set(&key, &(cur + amount));
+    }
+
+    pub fn get_daily_pool_distributed(env: &Env, hunt_id: u64, day: u64) -> i128 {
+        let key = (Self::DAILY_POOL_DIST_KEY, hunt_id, day);
+        env.storage().persistent().get(&key).unwrap_or(0)
+    }
+
+    pub fn add_daily_global_distributed(env: &Env, day: u64, amount: i128) {
+        let key = (Self::DAILY_GLOBAL_DIST_KEY, day);
+        let cur = env.storage().persistent().get(&key).unwrap_or(0);
+        env.storage().persistent().set(&key, &(cur + amount));
+    }
+
+    pub fn get_daily_global_distributed(env: &Env, day: u64) -> i128 {
+        let key = (Self::DAILY_GLOBAL_DIST_KEY, day);
+        env.storage().persistent().get(&key).unwrap_or(0)
+    }
         env.storage().persistent().get(&Self::TOTAL_XLM_DST_KEY).unwrap_or(0)
     }
 
