@@ -145,7 +145,6 @@ impl HuntyCore {
         // Generate unique hunt ID
         let hunt_id = Storage::next_hunt_id(&env);
 
-        panic!("Before HuntRewardConfig::new");
         // Initialize reward config with zero pool
         let reward_config = HuntRewardConfig::new(
             &env,
@@ -177,7 +176,6 @@ impl HuntyCore {
             max_attempts_per_clue: DEFAULT_MAX_ATTEMPTS_PER_CLUE,
         };
 
-        panic!("Before save_hunt");
         // Store the hunt
         Storage::save_hunt(&env, &hunt);
 
