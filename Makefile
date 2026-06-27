@@ -1,12 +1,17 @@
 WASM_DIR := target/wasm32v1-none/release
 BINDINGS_DIR := bindings
+PYTHON ?= python3
+DOCS_OUTPUT := docs/contract-api.md
 
-.PHONY: build bindings all clean
+.PHONY: build bindings all clean generate-api-docs
 
 all: build bindings
 
-build:
+build: generate-api-docs
 	stellar contract build
+
+generate-api-docs:
+	$(PYTHON) scripts/generate_api_docs.py --output $(DOCS_OUTPUT)
 
 bindings: build
 	stellar contract bindings typescript \
