@@ -896,6 +896,156 @@ impl HuntyCore {
         Ok(())
     }
 
+    /// Variant of `submit_answer` which accepts a precomputed SHA256 answer hash.
+    /// This avoids on-chain normalization and hashing when the client supplies
+    /// the correctly computed `answer_hash = SHA256(hunt_id || clue_id || normalized_answer)`.
+    /// Use this from off-chain callers that can perform normalization+hashing cheaply.
+    pub fn submit_answer_with_hash(
+        env: Env,
+        hunt_id: u64,
+        clue_id: u32,
+        player: Address,
+        answer_hash: BytesN<32>,
+        submission_nonce: u64,
+        submitted_at: u64,
+    ) -> Result<(), HuntErrorCode> {
+        // Require player authorization
+        player.require_auth();
+
+        if Storage::is_pause_answers(&env) {
+            return Err(HuntErrorCode::AnswersPaused);
+        }
+
+        // 1. Verify hunt exists and is active
+        let hunt = Storage::get_hunt(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
+
+        let current_time = env.ledger().timestamp();
+        if !hunt.is_active(current_time) {
+            return Err(HuntErrorCode::HuntNotActive);
+        }
+
+        if Storage::is_banned(&env, hunt_id, &player) {
+            return Err(HuntErrorCode::BannedPlayer);
+        }
+
+        Self::validate_submission_timestamp(current_time, submitted_at)
+            .map_err(HuntErrorCode::from)?;
+        Self::assert_submission_not_replayed(
+            &env,
+            hunt_id,
+            clue_id,
+            &player,
+            submission_nonce,
+            submitted_at,
+            current_time,
+        )
+        .map_err(HuntErrorCode::from)?;
+
+        Storage::save_processed_submission(
+            &env,
+            hunt_id,
+            clue_id,
+            &player,
+            submission_nonce,
+            submitted_at,
+            submitted_at.saturating_add(ANSWER_SUBMISSION_WINDOW_SECS),
+        );
+
+        let mut progress = Storage::get_player_progress(&env, hunt_id, &player)
+            .ok_or(HuntErrorCode::PlayerNotRegistered)?;
+
+        let clue = Storage::get_clue(&env, hunt_id, clue_id).ok_or(HuntErrorCode::ClueNotFound)?;
+
+        if progress.has_completed_clue(clue_id) {
+            return Err(HuntErrorCode::ClueAlreadyCompleted);
+        }
+
+        if hunt.max_submissions_per_minute > 0 {
+            let mut updated_submissions = Vec::new(&env);
+            for i in 0..progress.recent_submissions.len() {
+                let ts = progress.recent_submissions.get(i).unwrap();
+                if current_time < ts + 60 {
+                    updated_submissions.push_back(ts);
+                }
+            }
+            progress.recent_submissions = updated_submissions;
+
+            if progress.recent_submissions.len() >= hunt.max_submissions_per_minute {
+                let oldest_ts = progress.recent_submissions.get(0).unwrap();
+                let elapsed = current_time.saturating_sub(oldest_ts);
+                let cooldown_remaining = 60u64.saturating_sub(elapsed);
+                return Err(HuntErrorCode::from(HuntError::RateLimitExceeded {
+                    cooldown_remaining,
+                }));
+            }
+        }
+
+        if answer_hash != clue.answer_hash {
+            if hunt.max_submissions_per_minute > 0 {
+                progress.recent_submissions.push_back(current_time);
+                Storage::save_player_progress(&env, &progress);
+            }
+            let incorrect_event = AnswerIncorrectEvent {
+                hunt_id,
+                player: player.clone(),
+                clue_id,
+                timestamp: current_time,
+            };
+            env.events().publish(
+                (Symbol::new(&env, "AnswerIncorrect"), hunt_id, clue_id),
+                incorrect_event,
+            );
+            return Err(HuntErrorCode::InvalidAnswer);
+        }
+
+        let score = Self::calculate_score(&hunt, &clue, progress.started_at, current_time);
+        progress.complete_clue(&env, clue_id, score)?;
+
+        if hunt.max_submissions_per_minute > 0 {
+            progress.recent_submissions = Vec::new(&env);
+        }
+
+        let all_required_completed =
+            Self::check_all_required_clues_completed(&env, hunt_id, &progress);
+
+        if all_required_completed && !progress.is_completed {
+            progress.is_completed = true;
+            progress.completed_at = current_time;
+
+            let mut hunt_mut =
+                Storage::get_hunt(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
+            hunt_mut.completed_count += 1;
+            let rank = hunt_mut.completed_count;
+            Storage::save_hunt(&env, &hunt_mut);
+            let hunt_completed_event = HuntCompletedEvent {
+                hunt_id,
+                player: player.clone(),
+                total_score: progress.total_score,
+                completion_time: current_time,
+                completion_rank: rank,
+            };
+            env.events().publish(
+                (Symbol::new(&env, "HuntCompleted"), hunt_id),
+                hunt_completed_event,
+            );
+        }
+
+        Storage::save_player_progress(&env, &progress);
+
+        let clue_completed_event = ClueCompletedEvent {
+            hunt_id,
+            player: player.clone(),
+            clue_id,
+            points_earned: score,
+        };
+        env.events().publish(
+            (Symbol::new(&env, "ClueCompleted"), hunt_id, clue_id),
+            clue_completed_event,
+        );
+
+        Ok(())
+    }
+
     fn completion_rank(env: &Env, hunt_id: u64) -> u32 {
         let players = Storage::get_hunt_players(env, hunt_id);
         let mut completed_players = 0u32;

@@ -112,6 +112,84 @@ mod test {
     }
 
     #[test]
+    fn test_submit_answer_with_hash_works() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_700_000_000);
+        let creator = Address::generate(&env);
+        let player1 = Address::generate(&env);
+        let player2 = Address::generate(&env);
+        let contract_id = env.register(HuntyCore, ());
+
+        // Create hunt
+        env.mock_all_auths();
+        let hunt_id = as_core_contract(&env, &contract_id, |env| {
+            HuntyCore::create_hunt(
+                env.clone(),
+                creator.clone(),
+                String::from_str(env, "Hash Hunt"),
+                String::from_str(env, "Test hashing paths"),
+                None,
+                None,
+                0,
+                None,
+            )
+        })
+        .unwrap();
+
+        // Add a clue with answer "Paris"
+        env.mock_all_auths();
+        let clue_id = as_core_contract(&env, &contract_id, |env| {
+            HuntyCore::add_clue(
+                env.clone(),
+                hunt_id,
+                String::from_str(env, "Capital of France?"),
+                String::from_str(env, "Paris"),
+                10,
+                true,
+                None,
+            )
+        })
+        .unwrap();
+
+        // Register two players
+        env.as_contract(&contract_id, || {
+            HuntyCore::register_player(env.clone(), hunt_id, player1.clone()).unwrap();
+        });
+        env.as_contract(&contract_id, || {
+            HuntyCore::register_player(env.clone(), hunt_id, player2.clone()).unwrap();
+        });
+
+        // Submit plaintext answer for player1
+        let res1 = env.as_contract(&contract_id, || {
+            HuntyCore::submit_answer(
+                env.clone(),
+                hunt_id,
+                clue_id,
+                player1.clone(),
+                String::from_str(&env, "Paris"),
+                1,
+                env.ledger().timestamp(),
+            )
+        });
+        assert!(res1.is_ok());
+
+        // Compute precomputed hash (uses same normalization helper) and submit for player2
+        let pre_hash = HuntyCore::normalize_and_hash_answer(&env, hunt_id, clue_id, &String::from_str(&env, "Paris")).unwrap();
+        let res2 = env.as_contract(&contract_id, || {
+            HuntyCore::submit_answer_with_hash(
+                env.clone(),
+                hunt_id,
+                clue_id,
+                player2.clone(),
+                pre_hash.clone(),
+                1,
+                env.ledger().timestamp(),
+            )
+        });
+        assert!(res2.is_ok());
+    }
+
+    #[test]
     fn test_hunt_completion_ranks() {
         let env = Env::default();
         env.ledger().set_timestamp(1_700_000_000);
