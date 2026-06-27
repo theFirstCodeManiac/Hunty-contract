@@ -35,6 +35,7 @@ pub enum HuntErrorCode {
     RegistrationsPaused = 28,
     AnswersPaused = 29,
     RewardsPaused = 30,
+    HuntEndTimeInPast = 31,
 }
 
 #[derive(Debug)]
@@ -67,6 +68,7 @@ pub enum HuntError {
     RegistrationsPaused,
     AnswersPaused,
     RewardsPaused,
+    HuntEndTimeInPast { end_time: u64, current_time: u64 },
 }
 
 impl fmt::Display for HuntError {
@@ -174,6 +176,9 @@ impl fmt::Display for HuntError {
             HuntError::RewardsPaused => {
                 write!(f, "Reward claims are currently paused")
             }
+            HuntError::HuntEndTimeInPast { end_time, current_time } => {
+                write!(f, "Hunt end_time {} is in the past (current time: {})", end_time, current_time)
+            }
         }
     }
 }
@@ -209,6 +214,7 @@ impl From<HuntError> for HuntErrorCode {
             HuntError::RegistrationsPaused => HuntErrorCode::RegistrationsPaused,
             HuntError::AnswersPaused => HuntErrorCode::AnswersPaused,
             HuntError::RewardsPaused => HuntErrorCode::RewardsPaused,
+            HuntError::HuntEndTimeInPast { .. } => HuntErrorCode::HuntEndTimeInPast,
         }
     }
 }
