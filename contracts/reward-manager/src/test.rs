@@ -1793,7 +1793,7 @@ use soroban_sdk::{symbol_short, token, Address, Env, Symbol, Vec};
                 admin.clone(),
                 1,
                 recipient.clone(),
-                0, // amount: 0 means withdraw all
+                0,
             );
             assert_eq!(result, Err(RewardErrorCode::InvalidAmount));
         });

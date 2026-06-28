@@ -24,6 +24,7 @@ pub enum HuntStatus {
     Active,
     Completed,
     Cancelled,
+    Paused,
 }
 
 #[contracttype]
@@ -34,7 +35,11 @@ pub struct RewardConfig {
     pub nft_contract: Option<Address>,
     pub max_winners: u32,
     pub claimed_count: u32,
+    pub nft_rarity: u32,
+    pub nft_tier: u32,
 }
+
+pub type HuntRewardConfig = RewardConfig;
 
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -48,6 +53,9 @@ pub struct Hunt {
     pub activated_at: u64,
     pub end_time: u64,
     pub reward_config: RewardConfig,
+    pub time_bonus_start_bps: Option<u32>,
+    pub time_bonus_min_bps: Option<u32>,
+    pub time_bonus_decay_secs: Option<u64>,
     pub total_clues: u32,
     pub required_clues: u32,
     pub completed_count: u32,
@@ -61,7 +69,7 @@ pub struct Hunt {
 pub struct Clue {
     pub clue_id: u32,
     pub question: String,
-    pub answer_hash: BytesN<32>,
+    pub answer_hashes: Vec<BytesN<32>>,
     pub points: u32,
     pub is_required: bool,
     pub difficulty: u32,
@@ -105,15 +113,6 @@ pub struct Location {
     pub radius: u32,
 }
 
-impl Default for Location {
-    fn default() -> Self {
-        Self {
-            latitude: 0,
-            longitude: 0,
-            radius: 0,
-        }
-    }
-}
 
 /// Internal storage representation of player progress.
 /// Does not store `player` or `hunt_id` — those are already the storage key.
@@ -204,6 +203,7 @@ impl PlayerProgress {
         }
         Ok(())
     }
+
 }
 
 impl Hunt {
@@ -218,10 +218,13 @@ impl Hunt {
 
 impl RewardConfig {
     pub fn new(
+        _env: &Env,
         xlm_pool: i128,
         nft_enabled: bool,
         nft_contract: Option<Address>,
         max_winners: u32,
+        nft_rarity: u32,
+        nft_tier: u32,
     ) -> Self {
         Self {
             xlm_pool,
@@ -229,6 +232,8 @@ impl RewardConfig {
             nft_contract,
             max_winners,
             claimed_count: 0,
+            nft_rarity,
+            nft_tier,
         }
     }
 
@@ -311,6 +316,8 @@ pub struct ClueAddedEvent {
     pub question: String,
     pub points: u32,
     pub is_required: bool,
+    /// Difficulty multiplier (1-10).
+    pub difficulty: u32,
 }
 
 /// Emitted when a player registers for an active hunt.
@@ -366,11 +373,85 @@ pub struct HuntStatistics {
     pub average_score: u32,
 }
 
-/// Rate limit status for hunt creation by a creator address.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct ClueAliasesAddedEvent {
+    pub hunt_id: u64,
+    pub clue_id: u32,
+    pub creator: Address,
+    pub aliases_count: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct RewardManagerSetEvent {
+    pub old_address: Option<Address>,
+    pub new_address: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TimeBonusConfig {
+    pub start_multiplier_bps: u32,
+    pub min_multiplier_bps: u32,
+    pub decay_duration_secs: u64,
+}
+
+impl TimeBonusConfig {
+    pub fn is_valid(&self) -> bool {
+        self.decay_duration_secs > 0
+            && self.start_multiplier_bps >= self.min_multiplier_bps
+            && self.min_multiplier_bps >= 10_000
+    }
+
+    pub fn multiplier_bps_at(&self, elapsed_secs: u64) -> u32 {
+        if self.decay_duration_secs == 0 {
+            return self.min_multiplier_bps;
+        }
+
+        if elapsed_secs >= self.decay_duration_secs {
+            return self.min_multiplier_bps;
+        }
+
+        let start = self.start_multiplier_bps as u128;
+        let min = self.min_multiplier_bps as u128;
+        let span = start.saturating_sub(min);
+        let decay = (span * elapsed_secs as u128) / self.decay_duration_secs as u128;
+        (start.saturating_sub(decay)) as u32
+    }
+}
+
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RateLimitStatus {
     pub creations_today: u32,
     pub daily_limit: u32,
     pub cooldown_seconds: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LeaderboardRow {
+    pub index: u32,
+    pub player: Address,
+    pub score: u32,
+    pub completed_at: u64,
+    pub is_completed: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LeaderboardWindow {
+    pub entries: Vec<LeaderboardRow>,
+    pub next_index: u32,
+    pub finished: bool,
+    pub queried_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct RewardClaimFailedEvent {
+    pub hunt_id: u64,
+    pub player: Address,
+    pub error_code: u32,
 }

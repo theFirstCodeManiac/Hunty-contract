@@ -238,8 +238,6 @@ impl Storage {
         let key = (Self::DAILY_GLOBAL_DIST_KEY, day);
         env.storage().persistent().get(&key).unwrap_or(0)
     }
-        env.storage().persistent().get(&Self::TOTAL_XLM_DST_KEY).unwrap_or(0)
-    }
 
     // ========== Reentrancy Guard ==========
 

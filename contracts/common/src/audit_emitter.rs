@@ -14,7 +14,7 @@ pub fn emit_audit_event(
     let event = AuditEvent {
         admin_address: admin_address.clone(),
         timestamp,
-        action_type,
+        action_type: action_type.clone(),
         contract: contract_name,
         details,
     };
@@ -27,6 +27,6 @@ pub fn emit_audit_event(
 }
 
 /// Helper to build detail pairs
-pub fn detail(key: Symbol, value: &str) -> (Symbol, String) {
+pub fn detail(env: &Env, key: Symbol, value: &str) -> (Symbol, String) {
     (key, String::from_str(env, value))
 }

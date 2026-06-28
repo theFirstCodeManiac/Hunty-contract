@@ -1,7 +1,7 @@
 #![cfg_attr(not(test), no_std)]
 use soroban_sdk::{
-    contract, contractimpl, contracttype, panic_with_error, symbol_short, Address, Env, Map,
-    String, Symbol, Val, Vec,
+    contract, contractimpl, contracttype, panic_with_error, Address, Env, Map, String, Symbol,
+    Val, Vec, symbol_short,
 };
 
 const MAX_URI_LEN: usize = 512;
@@ -31,50 +31,18 @@ pub struct NftMetadata {
     pub royalty_bps: Option<u32>,
 }
 
-fn image_uri_is_valid(_uri: &String) -> bool {
-    true
-}
-
-fn string_to_bytes<const N: usize>(value: &String) -> Option<([u8; N], usize)> {
-    let len = value.len() as usize;
-    if len > N {
-        return None;
+fn image_uri_is_valid(uri: &String) -> bool {
+    let len = uri.len();
+    if len == 0 || len > 200 {
+        return false;
     }
-
-    let mut buf = [0u8; N];
-    value.copy_into_slice(&mut buf[..len]);
-    Some((buf, len))
-}
-
-fn replace_prefix(env: &Env, value: &String, old_prefix: &String, new_prefix: &String) -> Option<String> {
-    let (value_buf, value_len) = string_to_bytes::<4096>(value)?;
-    let (old_buf, old_len) = string_to_bytes::<4096>(old_prefix)?;
-    let (new_buf, new_len) = string_to_bytes::<4096>(new_prefix)?;
-
-    if value_len < old_len || value_buf[..old_len] != old_buf[..old_len] {
-        return None;
+    let mut buf = [0u8; 200];
+    uri.copy_into_slice(&mut buf[..len as usize]);
+    if let Ok(text) = core::str::from_utf8(&buf[..len as usize]) {
+        text.starts_with("https://") || text.starts_with("ipfs://")
+    } else {
+        false
     }
-
-    let suffix_len = value_len - old_len;
-    let total_len = new_len + suffix_len;
-    if total_len > 4096 {
-        return None;
-    }
-
-    let mut out = [0u8; 4096];
-    out[..new_len].copy_from_slice(&new_buf[..new_len]);
-    out[new_len..total_len].copy_from_slice(&value_buf[old_len..value_len]);
-    let updated = core::str::from_utf8(&out[..total_len]).ok()?;
-    Some(String::from_str(env, updated))
-}
-
-/// Collection-level statistics included in mint events for indexers.
-#[contracttype]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NftCollectionStats {
-    pub total_supply: u64,
-    pub total_hunts: u64,
-    pub total_owners: u64,
 }
 
 /// Complete metadata returned by get_nft_metadata (includes NftData-derived fields).
@@ -185,19 +153,19 @@ pub const CONTRACT_VERSION: u32 = 2;
 
 #[contractimpl]
 impl NftReward {
-    /// Initializes the NFT reward contract with an admin address and optional max supply cap.
-    /// Call this once to set the admin who can manage the contract.
+    /// Initializes the NFT reward contract with an admin, minter, and optional max supply cap.
     pub fn initialize(
         env: Env,
         admin: Address,
+        minter: Address,
         max_supply: Option<u64>,
     ) -> Result<(), crate::errors::NftErrorCode> {
         if Storage::is_initialized(&env) {
             return Err(crate::errors::NftErrorCode::AlreadyInitialized);
         }
 
-        admin.require_auth();
         Storage::save_admin(&env, &admin);
+        Storage::add_minter(&env, &minter);
         Storage::set_max_supply(&env, max_supply);
         Storage::set_contract_version(&env, CONTRACT_VERSION);
         Ok(())
@@ -211,6 +179,60 @@ impl NftReward {
             return Err(crate::errors::NftErrorCode::Unauthorized);
         }
         Ok(())
+    }
+
+    pub fn get_admin(env: Env) -> Option<Address> {
+        Storage::get_admin(&env)
+    }
+
+    pub fn add_minter(
+        env: Env,
+        admin: Address,
+        minter: Address,
+    ) -> Result<(), crate::errors::NftErrorCode> {
+        admin.require_auth();
+        let stored_admin = Storage::get_admin(&env).ok_or(crate::errors::NftErrorCode::Unauthorized)?;
+        if admin != stored_admin {
+            return Err(crate::errors::NftErrorCode::Unauthorized);
+        }
+        Storage::add_minter(&env, &minter);
+        Ok(())
+    }
+
+    pub fn remove_minter(
+        env: Env,
+        admin: Address,
+        minter: Address,
+    ) -> Result<(), crate::errors::NftErrorCode> {
+        admin.require_auth();
+        let stored_admin = Storage::get_admin(&env).ok_or(crate::errors::NftErrorCode::Unauthorized)?;
+        if admin != stored_admin {
+            return Err(crate::errors::NftErrorCode::Unauthorized);
+        }
+        Storage::remove_minter(&env, &minter);
+        Ok(())
+    }
+
+    pub fn is_minter(env: Env, minter: Address) -> bool {
+        Storage::is_minter(&env, &minter)
+    }
+
+    pub fn set_reward_manager(
+        env: Env,
+        admin: Address,
+        reward_manager: Address,
+    ) -> Result<(), crate::errors::NftErrorCode> {
+        admin.require_auth();
+        let stored_admin = Storage::get_admin(&env).ok_or(crate::errors::NftErrorCode::Unauthorized)?;
+        if admin != stored_admin {
+            return Err(crate::errors::NftErrorCode::Unauthorized);
+        }
+        Storage::set_reward_manager(&env, &reward_manager);
+        Ok(())
+    }
+
+    pub fn get_reward_manager(env: Env) -> Option<Address> {
+        Storage::get_reward_manager(&env)
     }
 
     /// Mints a unique NFT as a reward for hunt completion.
@@ -383,7 +405,6 @@ impl NftReward {
             nft_id,
             hunt_id,
             owner: player_address.clone(),
-            completion_player: player_address.clone(),
             metadata: metadata.clone(),
             transferable,
             minted_at,
@@ -402,15 +423,7 @@ impl NftReward {
             owner: player_address,
             rarity: metadata.rarity,
             tier: metadata.tier,
-            metadata: metadata.clone(),
-            hunt_title: metadata.hunt_title.clone(),
-            total_minted_for_hunt: Storage::get_nft_count_for_hunt(&env, hunt_id),
-            completion_rank: Storage::get_nft_count_for_hunt(&env, hunt_id) as u32,
-            collection_stats: NftCollectionStats {
-                total_supply: Storage::get_nft_counter(&env),
-                total_hunts: Storage::get_total_hunts(&env),
-                total_owners: Storage::get_total_owners(&env),
-            },
+            metadata,
             minted_at,
         };
         env.events()

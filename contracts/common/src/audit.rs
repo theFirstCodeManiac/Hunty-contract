@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, String, Symbol, Vec};
+use soroban_sdk::{contracttype, symbol_short, Address, String, Symbol, Vec};
 
 /// Core audit event emitted for every admin action
 #[contracttype]

@@ -68,11 +68,6 @@ impl Storage {
         (symbol_short!("LOCKR"), locker.clone())
     }
 
-    pub fn remove_nft(env: &Env, nft_id: u64) {
-        let key = Self::nft_key(nft_id);
-        env.storage().persistent().remove(&key);
-    }
-
     pub fn save_admin(env: &Env, admin: &Address) {
         env.storage().instance().set(&Self::ADMIN_KEY, admin);
     }

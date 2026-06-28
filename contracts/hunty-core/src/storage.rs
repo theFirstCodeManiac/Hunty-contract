@@ -214,16 +214,8 @@ impl Storage {
         Self::get_clue(env, hunt_id, clue_id).ok_or(HuntError::ClueNotFound { hunt_id })
     }
 
-    /// Returns all clues for a specific hunt.
-    ///
-    /// # Arguments
-    /// * `env` - The Soroban environment
-    /// * `hunt_id` - The hunt to get clues for
-    ///
-    /// # Returns
-    /// A Vec containing all Clue structs for the hunt, in clue_id order
-    pub fn list_clues_for_hunt(env: &Env, hunt_id: u64) -> Vec<Clue> {
-        let clue_ids = Self::get_clue_ids_for_hunt(env, hunt_id);
+    pub fn list_clues_for_hunt(env: &Env, hunt_id: u64, offset: u32, limit: u32) -> Vec<Clue> {
+        let clue_ids = Self::get_clue_ids_for_hunt(env, hunt_id, offset, limit);
         let mut clues = Vec::new(env);
 
         for i in 0..clue_ids.len() {
@@ -275,16 +267,16 @@ impl Storage {
         player: &Address,
     ) -> Option<PlayerProgress> {
         let key = Self::progress_key(hunt_id, player);
-        let result: Option<PlayerProgress> = env.storage().persistent().get(&key);
-        if let Some(ref progress) = result {
-            let policy = if progress.is_completed || progress.reward_claimed {
-                TtlPolicy::Short
+        let raw_val: Option<soroban_sdk::Val> = env.storage().persistent().get(&key);
+        raw_val.map(|val| {
+            if let Ok(bytes) = soroban_sdk::Bytes::try_from_val(env, &val) {
+                let stored: StoredPlayerProgress = StoredPlayerProgress::from_xdr(env, &bytes).unwrap();
+                PlayerProgress::from_stored(stored, player.clone(), hunt_id)
             } else {
-                TtlPolicy::Default
-            };
-            extend_ttl(env, &key, policy);
-        }
-        result
+                let stored: StoredPlayerProgress = StoredPlayerProgress::try_from_val(env, &val).unwrap();
+                PlayerProgress::from_stored(stored, player.clone(), hunt_id)
+            }
+        })
     }
 
     /// Retrieves player progress or returns an error if not found.
@@ -343,27 +335,32 @@ impl Storage {
         (Self::CLUE_KEY, hunt_id, clue_id)
     }
 
-    /// Generates a composite storage key for player progress.
-    /// Uses tuple key (PROGRESS_KEY, hunt_id, player) for efficient storage access.
-    fn progress_key(hunt_id: u64, player: &Address) -> (soroban_sdk::Symbol, u64, Address) {
+    pub fn progress_key(hunt_id: u64, player: &Address) -> (soroban_sdk::Symbol, u64, Address) {
         (Self::PROGRESS_KEY, hunt_id, player.clone())
     }
 
-    /// Generates a storage key for the list of clue IDs for a hunt.
-    /// Uses tuple key (CLUES_LIST_KEY, hunt_id) for efficient storage access.
-    fn clues_list_key(hunt_id: u64) -> (soroban_sdk::Symbol, u64) {
-        (Self::CLUES_LIST_KEY, hunt_id)
+    fn clue_entry_key(hunt_id: u64, index: u32) -> (soroban_sdk::Symbol, u64, u32) {
+        (Self::CLUE_ENTRY_KEY, hunt_id, index)
     }
 
-    /// Generates a storage key for the clue counter per hunt.
+    fn clue_list_count_key(hunt_id: u64) -> (soroban_sdk::Symbol, u64) {
+        (Self::CLUE_LIST_COUNT_KEY, hunt_id)
+    }
+
     fn clue_counter_key(hunt_id: u64) -> (soroban_sdk::Symbol, u64) {
         (Self::CLUE_COUNTER_KEY, hunt_id)
     }
 
-    /// Generates a storage key for the list of player addresses for a hunt.
-    /// Uses tuple key (PLAYERS_LIST_KEY, hunt_id) for efficient storage access.
-    fn players_list_key(hunt_id: u64) -> (soroban_sdk::Symbol, u64) {
-        (Self::PLAYERS_LIST_KEY, hunt_id)
+    fn player_entry_key(hunt_id: u64, index: u32) -> (soroban_sdk::Symbol, u64, u32) {
+        (Self::PLAYER_ENTRY_KEY, hunt_id, index)
+    }
+
+    fn player_count_key(hunt_id: u64) -> (soroban_sdk::Symbol, u64) {
+        (Self::PLAYER_COUNT_KEY, hunt_id)
+    }
+
+    fn clue_exists_key(hunt_id: u64, clue_id: u32) -> (soroban_sdk::Symbol, u64, u32) {
+        (symbol_short!("CLEX"), hunt_id, clue_id)
     }
 
     /// Key for view-only addresses for a hunt.
@@ -394,77 +391,96 @@ impl Storage {
     /// Adds a clue ID to the list of clues for a hunt.
     /// This maintains an index for efficient listing.
     fn add_clue_to_list(env: &Env, hunt_id: u64, clue_id: u32) {
-        let key = Self::clues_list_key(hunt_id);
-        let mut clue_ids = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or_else(|| Vec::new(env));
+        let count_key = Self::clue_list_count_key(hunt_id);
+        let count: u32 = env.storage().instance().get(&count_key).unwrap_or(0);
 
-        // Check if clue_id already exists to avoid duplicates
-        let mut exists = false;
-        for i in 0..clue_ids.len() {
-            if let Some(id) = clue_ids.get(i) {
-                if id == clue_id {
-                    exists = true;
-                    break;
-                }
+        // O(1) existence check
+        let exist_key = Self::clue_exists_key(hunt_id, clue_id);
+        if env.storage().instance().has(&exist_key) {
+            return;
+        }
+
+        env.storage()
+            .instance()
+            .set(&Self::clue_entry_key(hunt_id, count), &clue_id);
+        env.storage().instance().set(&count_key, &(count + 1));
+        env.storage().instance().set(&exist_key, &());
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
+    }
+
+    fn get_clue_ids_for_hunt(env: &Env, hunt_id: u64, offset: u32, limit: u32) -> Vec<u32> {
+        let count_key = Self::clue_list_count_key(hunt_id);
+        let count: u32 = env.storage().instance().get(&count_key).unwrap_or(0);
+        let mut ids = Vec::new(env);
+        let start = offset;
+        let end = core::cmp::min(offset.saturating_add(limit), count);
+        if start >= count {
+            return ids;
+        }
+        for i in start..end {
+            let entry_key = Self::clue_entry_key(hunt_id, i);
+            if let Some(id) = env.storage().instance().get(&entry_key) {
+                ids.push_back(id);
             }
         }
-
-        if !exists {
-            clue_ids.push_back(clue_id);
-            env.storage().persistent().set(&key, &clue_ids);
-        }
-        extend_ttl(env, &key, TtlPolicy::Active);
+        ids
     }
 
-    /// Retrieves the list of clue IDs for a hunt.
-    fn get_clue_ids_for_hunt(env: &Env, hunt_id: u64) -> Vec<u32> {
-        let key = Self::clues_list_key(hunt_id);
-        let result: Option<Vec<u32>> = env.storage().persistent().get(&key);
-        if result.is_some() {
-            extend_ttl(env, &key, TtlPolicy::Active);
-        }
-        result.unwrap_or_else(|| Vec::new(env))
-    }
-
-    /// Adds a player address to the list of players for a hunt.
-    /// This maintains an index for efficient listing.
     fn add_player_to_list(env: &Env, hunt_id: u64, player: &Address) {
-        let key = Self::players_list_key(hunt_id);
-        let mut players = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or_else(|| Vec::new(env));
+        let count_key = Self::player_count_key(hunt_id);
+        let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
 
-        // Check if player already exists to avoid duplicates
-        let mut exists = false;
-        for i in 0..players.len() {
-            if let Some(addr) = players.get(i) {
-                if addr == *player {
-                    exists = true;
-                    break;
-                }
-            }
+        // O(1) existence check
+        let exist_key = (symbol_short!("PLEX"), hunt_id, player.clone());
+        if env.storage().persistent().has(&exist_key) {
+            // Bump the exist marker so this player's slot never silently expires
+            env.storage().persistent().extend_ttl(
+                &exist_key,
+                PERSISTENT_TTL_THRESHOLD,
+                PERSISTENT_TTL_EXTEND_TO,
+            );
+            return;
         }
 
-        if !exists {
-            players.push_back(player.clone());
-            env.storage().persistent().set(&key, &players);
-        }
-        extend_ttl(env, &key, TtlPolicy::Default);
+        let entry_key = Self::player_entry_key(hunt_id, count);
+        env.storage().persistent().set(&entry_key, player);
+        env.storage().persistent().extend_ttl(
+            &entry_key,
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_EXTEND_TO,
+        );
+        env.storage().persistent().set(&count_key, &(count + 1));
+        env.storage().persistent().extend_ttl(
+            &count_key,
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_EXTEND_TO,
+        );
+        env.storage().persistent().set(&exist_key, &());
+        env.storage().persistent().extend_ttl(
+            &exist_key,
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_EXTEND_TO,
+        );
     }
 
-    /// Retrieves the list of player addresses for a hunt.
-    fn get_player_addresses_for_hunt(env: &Env, hunt_id: u64) -> Vec<Address> {
-        let key = Self::players_list_key(hunt_id);
-        let result: Option<Vec<Address>> = env.storage().persistent().get(&key);
-        if result.is_some() {
-            extend_ttl(env, &key, TtlPolicy::Default);
+    pub fn get_player_addresses_for_hunt(env: &Env, hunt_id: u64) -> Vec<Address> {
+        let count_key = Self::player_count_key(hunt_id);
+        let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+        let mut addrs = Vec::new(env);
+        for i in 0..count {
+            let entry_key = Self::player_entry_key(hunt_id, i);
+            if let Some(addr) = env.storage().persistent().get::<_, Address>(&entry_key) {
+                env.storage().persistent().extend_ttl(
+                    &entry_key,
+                    PERSISTENT_TTL_THRESHOLD,
+                    PERSISTENT_TTL_EXTEND_TO,
+                );
+                addrs.push_back(addr);
+            }
         }
-        result.unwrap_or_else(|| Vec::new(env))
+        addrs
     }
 
     // ========== Hunt Counter Functions ==========
@@ -639,7 +655,7 @@ impl Storage {
         let mut view_only_list = env
             .storage()
             .instance()
-            .get(&key)
+            .get::<_, Vec<Address>>(&key)
             .unwrap_or_else(|| Vec::new(env));
         
         // Check if address already exists to avoid duplicates
@@ -660,7 +676,7 @@ impl Storage {
         let mut view_only_list = env
             .storage()
             .instance()
-            .get(&key)
+            .get::<_, Vec<Address>>(&key)
             .unwrap_or_else(|| Vec::new(env));
         
         if let Some(idx) = view_only_list.first_index_of(address) {
@@ -683,7 +699,7 @@ impl Storage {
         let view_only_list = env
             .storage()
             .instance()
-            .get(&key)
+            .get::<_, Vec<Address>>(&key)
             .unwrap_or_else(|| Vec::new(env));
         
         view_only_list.first_index_of(address).is_some()
@@ -701,7 +717,7 @@ impl Storage {
         let key = Self::view_only_key(hunt_id);
         env.storage()
             .instance()
-            .get(&key)
+            .get::<_, Vec<Address>>(&key)
             .unwrap_or_else(|| Vec::new(env))
     }
 
@@ -805,7 +821,7 @@ impl Storage {
         let mut view_only_list = env
             .storage()
             .instance()
-            .get(&Self::GLOBAL_VIEW_ONLY_KEY)
+            .get::<_, Vec<Address>>(&Self::GLOBAL_VIEW_ONLY_KEY)
             .unwrap_or_else(|| Vec::new(env));
         
         // Check if address already exists to avoid duplicates
@@ -824,7 +840,7 @@ impl Storage {
         let mut view_only_list = env
             .storage()
             .instance()
-            .get(&Self::GLOBAL_VIEW_ONLY_KEY)
+            .get::<_, Vec<Address>>(&Self::GLOBAL_VIEW_ONLY_KEY)
             .unwrap_or_else(|| Vec::new(env));
         
         if let Some(idx) = view_only_list.first_index_of(address) {
@@ -845,7 +861,7 @@ impl Storage {
         let view_only_list = env
             .storage()
             .instance()
-            .get(&Self::GLOBAL_VIEW_ONLY_KEY)
+            .get::<_, Vec<Address>>(&Self::GLOBAL_VIEW_ONLY_KEY)
             .unwrap_or_else(|| Vec::new(env));
         
         view_only_list.first_index_of(address).is_some()
@@ -861,7 +877,7 @@ impl Storage {
     pub fn get_global_view_only_list(env: &Env) -> Vec<Address> {
         env.storage()
             .instance()
-            .get(&Self::GLOBAL_VIEW_ONLY_KEY)
+            .get::<_, Vec<Address>>(&Self::GLOBAL_VIEW_ONLY_KEY)
             .unwrap_or_else(|| Vec::new(env))
     }
 
@@ -938,5 +954,55 @@ impl Storage {
             .get(&Self::BLACKLIST_KEY)
             .unwrap_or(Map::new(env));
         blacklist.get(creator.clone()).unwrap_or(false)
+    }
+
+    // ========== Hunt creation rate limiting ==========
+
+    pub fn get_rate_limit_admin(env: &Env) -> Option<Address> {
+        env.storage().instance().get(&symbol_short!("HRLADM"))
+    }
+
+    pub fn set_rate_limit_admin(env: &Env, admin: &Address) {
+        env.storage().instance().set(&symbol_short!("HRLADM"), admin);
+    }
+
+    pub fn get_default_hunt_creation_limit(env: &Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&symbol_short!("HRLDEF"))
+            .unwrap_or(crate::rate_limit::DEFAULT_HUNT_CREATION_LIMIT)
+    }
+
+    pub fn set_default_hunt_creation_limit(env: &Env, limit: u32) {
+        env.storage().instance().set(&symbol_short!("HRLDEF"), &limit);
+    }
+
+    pub fn get_creator_limit_override(env: &Env, creator: &Address) -> Option<u32> {
+        let key = (symbol_short!("HRLOVR"), creator.clone());
+        env.storage().persistent().get(&key)
+    }
+
+    pub fn set_creator_limit_override(env: &Env, creator: &Address, limit: u32) {
+        let key = (symbol_short!("HRLOVR"), creator.clone());
+        env.storage().persistent().set(&key, &limit);
+    }
+
+    pub fn get_effective_hunt_creation_limit(env: &Env, creator: &Address) -> u32 {
+        Self::get_creator_limit_override(env, creator)
+            .unwrap_or_else(|| Self::get_default_hunt_creation_limit(env))
+    }
+
+    fn creator_daily_count_key(creator: &Address, day: u64) -> (soroban_sdk::Symbol, Address, u64) {
+        (symbol_short!("HRLCT"), creator.clone(), day)
+    }
+
+    pub fn get_creator_daily_hunt_count(env: &Env, creator: &Address, day: u64) -> u32 {
+        let key = Self::creator_daily_count_key(creator, day);
+        env.storage().persistent().get(&key).unwrap_or(0)
+    }
+
+    pub fn set_creator_daily_hunt_count(env: &Env, creator: &Address, day: u64, count: u32) {
+        let key = Self::creator_daily_count_key(creator, day);
+        env.storage().persistent().set(&key, &count);
     }
 }
