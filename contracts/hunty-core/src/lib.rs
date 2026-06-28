@@ -2,10 +2,11 @@
 use crate::errors::{HuntError, HuntErrorCode};
 use crate::storage::Storage;
 use crate::types::{
-    AnswerIncorrectEvent, Clue, ClueAddedEvent, ClueCompletedEvent, ClueInfo, Hunt,
-    HuntActivatedEvent, HuntCancelledEvent, HuntCompletedEvent, HuntCreatedEvent,
-    HuntDeactivatedEvent, HuntStatistics, HuntStatus, LeaderboardEntry, PlayerProgress,
-    PlayerRegisteredEvent, RateLimitStatus, RewardClaimedEvent, RewardConfig,
+    AnswerIncorrectEvent, Clue, ClueAddedEvent, ClueCompletedEvent, ClueInfo,
+    CreatorBlacklistedEvent, CreatorRemovedFromBlacklistEvent, Hunt, HuntActivatedEvent,
+    HuntCancelledEvent, HuntCompletedEvent, HuntCreatedEvent, HuntDeactivatedEvent,
+    HuntStatistics, HuntStatus, LeaderboardEntry, PlayerProgress, PlayerRegisteredEvent,
+    RateLimitStatus, RewardClaimedEvent, RewardConfig,
 };
 use reward_interface::RewardErrorCode;
 use soroban_sdk::{
@@ -36,6 +37,52 @@ pub struct HuntyCore;
 
 #[contractimpl]
 impl HuntyCore {
+    /// Sets the contract admin once. Subsequent calls require current admin auth via set_admin.
+    pub fn initialize_admin(env: Env, admin: Address) -> Result<(), HuntErrorCode> {
+        admin.require_auth();
+        if Storage::get_admin(&env).is_some() {
+            return Err(HuntErrorCode::Unauthorized);
+        }
+        Storage::set_admin(&env, &admin);
+        Ok(())
+    }
+
+    /// Pauses all player operations (registrations, answers, rewards) globally.
+    pub fn pause_contract(env: Env, admin: Address) -> Result<(), HuntErrorCode> {
+        Self::require_admin(&env, &admin)?;
+        Storage::set_contract_paused(&env, true);
+        Ok(())
+    }
+
+    /// Resumes all player operations.
+    pub fn unpause_contract(env: Env, admin: Address) -> Result<(), HuntErrorCode> {
+        Self::require_admin(&env, &admin)?;
+        Storage::set_contract_paused(&env, false);
+        Ok(())
+    }
+
+    /// Returns whether the global contract pause is active.
+    pub fn is_contract_paused(env: Env) -> bool {
+        Storage::is_contract_paused(&env)
+    }
+
+    fn require_admin(env: &Env, admin: &Address) -> Result<(), HuntErrorCode> {
+        admin.require_auth();
+        let stored_admin = Storage::get_admin(env).ok_or(HuntErrorCode::Unauthorized)?;
+        if stored_admin != *admin {
+            return Err(HuntErrorCode::Unauthorized);
+        }
+        Ok(())
+    }
+
+    fn ensure_not_paused(env: &Env) -> Result<(), HuntErrorCode> {
+        if Storage::is_contract_paused(env) {
+            return Err(HuntErrorCode::ContractPaused);
+        }
+        Ok(())
+    }
+
+
     /// Creates a new scavenger hunt with the provided metadata.
     ///
     /// # Arguments
@@ -64,9 +111,9 @@ impl HuntyCore {
         start_multiplier_bps: Option<u32>,
     ) -> Result<u64, HuntErrorCode> {
         monitoring::Monitoring::record_invocation(&env, 50_000, true);
-        // Validate creator address - in Soroban, Address is always valid if constructed,
-        // but we ensure it's not a zero/null address pattern if needed
-        // For now, we accept any valid Address type
+        if Storage::is_creator_blacklisted(&env, &creator) {
+            return Err(HuntErrorCode::AddressBlacklisted);
+        }
 
         // Validate and sanitize title/description at byte level
         let title = crate::sanitization::StringSanitizer::sanitize(
@@ -87,13 +134,6 @@ impl HuntyCore {
 
         let current_time = env.ledger().timestamp();
         rate_limit::RateLimiter::check_and_increment(&env, &creator, current_time)?;
-
-        // Check creator is not blacklisted
-        if Storage::is_blacklisted(&env, &creator) {
-            return Err(HuntErrorCode::CreatorBlacklisted);
-        }
-
-        // Get current timestamp
 
         // Generate unique hunt ID
         let hunt_id = Storage::next_hunt_id(&env);

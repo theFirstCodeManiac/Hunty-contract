@@ -38,6 +38,10 @@ pub enum HuntErrorCode {
     HuntEndTimeInPast = 31,
     NoPendingAdmin = 32,
     PendingAdminMismatch = 33,
+    InvalidRarity = 34,
+    InvalidTimeBonusConfig = 35,
+    AddressBlacklisted = 36,
+    ContractPaused = 37,
 }
 
 #[derive(Debug)]
@@ -74,6 +78,10 @@ pub enum HuntError {
     NoPendingAdmin,
     PendingAdminMismatch { expected: soroban_sdk::Address, actual: soroban_sdk::Address },
     AdminAlreadyProposed { pending: soroban_sdk::Address },
+    InvalidRarity { value: u32 },
+    InvalidTimeBonusConfig,
+    AddressBlacklisted,
+    ContractPaused,
 }
 
 impl fmt::Display for HuntError {
@@ -197,6 +205,18 @@ impl fmt::Display for HuntError {
             HuntError::AdminAlreadyProposed { pending } => {
                 write!(f, "Admin rotation already proposed for {}", pending)
             }
+            HuntError::AddressBlacklisted => {
+                write!(f, "Address is blacklisted from creating hunts")
+            }
+            HuntError::InvalidRarity { value } => {
+                write!(f, "Invalid rarity value: {}", value)
+            }
+            HuntError::InvalidTimeBonusConfig => {
+                write!(f, "Invalid time bonus configuration")
+            }
+            HuntError::ContractPaused => {
+                write!(f, "Contract is currently paused")
+            }
         }
     }
 }
@@ -236,6 +256,10 @@ impl From<HuntError> for HuntErrorCode {
             HuntError::NoPendingAdmin => HuntErrorCode::NoPendingAdmin,
             HuntError::PendingAdminMismatch { .. } => HuntErrorCode::PendingAdminMismatch,
             HuntError::AdminAlreadyProposed { .. } => HuntErrorCode::Unauthorized,
+            HuntError::InvalidRarity { .. } => HuntErrorCode::InvalidRarity,
+            HuntError::InvalidTimeBonusConfig => HuntErrorCode::InvalidTimeBonusConfig,
+            HuntError::AddressBlacklisted => HuntErrorCode::AddressBlacklisted,
+            HuntError::ContractPaused => HuntErrorCode::ContractPaused,
         }
     }
 }

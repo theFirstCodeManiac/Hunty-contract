@@ -1,6 +1,10 @@
 use crate::errors::HuntError;
 use crate::types::{Clue, Hunt, PlayerProgress};
-use soroban_sdk::{symbol_short, Address, Env, IntoVal, Vec};
+use soroban_sdk::{symbol_short, Address, Env, IntoVal, Map, Vec};
+
+// Instance TTL constants used by blacklist and contract-pause storage.
+const INSTANCE_TTL_THRESHOLD: u32 = 518_400;
+const INSTANCE_TTL_EXTEND_TO: u32 = 518_400;
 
 /// Storage access layer for hunts, clues, and player progress.
 /// Provides type-safe, efficient storage operations with consistent key management.
@@ -65,27 +69,38 @@ impl Storage {
     const PAUSE_REGISTRATIONS_KEY: soroban_sdk::Symbol = symbol_short!("PAUSE_RE");
     const PAUSE_ANSWERS_KEY: soroban_sdk::Symbol = symbol_short!("PAUSE_A");
     const PAUSE_REWARDS_KEY: soroban_sdk::Symbol = symbol_short!("PAUSE_RW");
-    
-    // Pause functions
+    const CONTRACT_PAUSED_KEY: soroban_sdk::Symbol = symbol_short!("CPAUSED");
+    const BLACKLIST_KEY: soroban_sdk::Symbol = symbol_short!("BLKLST");
+
+    // Pause functions (granular: registrations, answers, rewards)
     pub fn set_pause_registrations(env: &Env, paused: bool) {
         env.storage().instance().set(&Self::PAUSE_REGISTRATIONS_KEY, &paused);
     }
     pub fn is_pause_registrations(env: &Env) -> bool {
         env.storage().instance().get(&Self::PAUSE_REGISTRATIONS_KEY).unwrap_or(false)
     }
-    
+
     pub fn set_pause_answers(env: &Env, paused: bool) {
         env.storage().instance().set(&Self::PAUSE_ANSWERS_KEY, &paused);
     }
     pub fn is_pause_answers(env: &Env) -> bool {
         env.storage().instance().get(&Self::PAUSE_ANSWERS_KEY).unwrap_or(false)
     }
-    
+
     pub fn set_pause_rewards(env: &Env, paused: bool) {
         env.storage().instance().set(&Self::PAUSE_REWARDS_KEY, &paused);
     }
     pub fn is_pause_rewards(env: &Env) -> bool {
         env.storage().instance().get(&Self::PAUSE_REWARDS_KEY).unwrap_or(false)
+    }
+
+    // Global contract pause (emergency stop for all operations)
+    pub fn set_contract_paused(env: &Env, paused: bool) {
+        env.storage().instance().set(&Self::CONTRACT_PAUSED_KEY, &paused);
+        env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
+    }
+    pub fn is_contract_paused(env: &Env) -> bool {
+        env.storage().instance().get(&Self::CONTRACT_PAUSED_KEY).unwrap_or(false)
     }
 
     // ========== Hunt Storage Functions ==========
@@ -901,5 +916,27 @@ impl Storage {
             .instance()
             .get::<_, bool>(&Self::blacklist_key(creator))
             .unwrap_or(false)
+    }
+
+    pub fn set_creator_blacklisted(env: &Env, creator: &Address, blacklisted: bool) {
+        let mut blacklist: Map<Address, bool> = env
+            .storage()
+            .instance()
+            .get(&Self::BLACKLIST_KEY)
+            .unwrap_or(Map::new(env));
+        blacklist.set(creator.clone(), blacklisted);
+        env.storage().instance().set(&Self::BLACKLIST_KEY, &blacklist);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
+    }
+
+    pub fn is_creator_blacklisted(env: &Env, creator: &Address) -> bool {
+        let blacklist: Map<Address, bool> = env
+            .storage()
+            .instance()
+            .get(&Self::BLACKLIST_KEY)
+            .unwrap_or(Map::new(env));
+        blacklist.get(creator.clone()).unwrap_or(false)
     }
 }
