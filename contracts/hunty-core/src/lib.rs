@@ -167,6 +167,7 @@ impl HuntyCore {
             completed_count: 0,
             max_submissions_per_minute,
             start_multiplier_bps: start_multiplier_bps.unwrap_or(20000),
+            max_attempts_per_clue: 0,
         };
 
         // Store the hunt
@@ -213,10 +214,12 @@ impl HuntyCore {
             start_time,
             end_time,
             template_hunt.max_submissions_per_minute,
+            None,
         )?;
 
         let template_clues = Storage::list_clues_for_hunt(&env, template_hunt_id, 0, MAX_CLUES_PER_HUNT);
         let mut hunt = Storage::get_hunt(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
+        hunt.max_attempts_per_clue = template_hunt.max_attempts_per_clue;
 
         for i in 0..template_clues.len() {
             let clue = template_clues.get(i).unwrap();
@@ -1217,7 +1220,17 @@ impl HuntyCore {
         }
 
         if !answer_correct {
-            Storage::save_player_progress(&env, &progress);
+            // Track and enforce attempt limit
+            if hunt.max_attempts_per_clue > 0 {
+                let attempts = progress.failed_attempts.get(clue_id).unwrap_or(0) + 1;
+                progress.failed_attempts.set(clue_id, attempts);
+                Storage::save_player_progress(&env, &progress);
+                if attempts >= hunt.max_attempts_per_clue {
+                    return Err(HuntErrorCode::MaxAttemptsExceeded);
+                }
+            } else {
+                Storage::save_player_progress(&env, &progress);
+            }
             let incorrect_event = AnswerIncorrectEvent {
                 hunt_id,
                 player: player.clone(),

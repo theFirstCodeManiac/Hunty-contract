@@ -1513,6 +1513,381 @@ mod test {
         );
     }
 
+    // ── Regression tests for answer normalization (issue #432) ──────────────
+
+    /// Helper: register a contract, create a hunt with one required clue, activate it, and
+    /// register a player. Returns `(contract_id, hunt_id, clue_id, player)`.
+    fn setup_norm_hunt(env: &Env, answer: &str) -> (Address, u64, u32, Address) {
+        let contract_id = env.register(HuntyCore, ());
+        let creator = Address::generate(env);
+        let player = Address::generate(env);
+        env.mock_all_auths();
+
+        let hunt_id = as_core_contract(env, &contract_id, |env| {
+            HuntyCore::create_hunt(
+                env.clone(),
+                creator.clone(),
+                String::from_str(env, "Hunt"),
+                String::from_str(env, "Desc"),
+                None,
+                None,
+                0,
+                None,
+            )
+            .unwrap()
+        });
+
+        let clue_id = as_core_contract(env, &contract_id, |env| {
+            HuntyCore::add_clue(
+                env.clone(),
+                hunt_id,
+                String::from_str(env, "Q?"),
+                String::from_str(env, answer),
+                10,
+                true,
+                None,
+            )
+            .unwrap()
+        });
+
+        as_core_contract(env, &contract_id, |env| {
+            HuntyCore::activate_hunt(env.clone(), hunt_id, creator.clone()).unwrap();
+            HuntyCore::register_player(env.clone(), hunt_id, player.clone()).unwrap();
+        });
+
+        (contract_id, hunt_id, clue_id, player)
+    }
+
+    #[test]
+    fn test_submit_answer_case_insensitive() {
+        // Clue stored with "Paris"; player submits "PARIS" — must match.
+        let env = Env::default();
+        env.ledger().set_timestamp(1_700_000_000);
+        let (contract_id, hunt_id, clue_id, player) = setup_norm_hunt(&env, "Paris");
+
+        env.mock_all_auths();
+        let result = as_core_contract(&env, &contract_id, |env| {
+            HuntyCore::submit_answer(
+                env.clone(),
+                hunt_id,
+                clue_id,
+                player.clone(),
+                String::from_str(env, "PARIS"),
+                1,
+                env.ledger().timestamp(),
+            )
+        });
+        assert!(result.is_ok(), "uppercase answer should match: {:?}", result);
+    }
+
+    #[test]
+    fn test_submit_answer_leading_trailing_whitespace() {
+        // Clue stored with "paris"; player submits "  paris  " — must match.
+        let env = Env::default();
+        env.ledger().set_timestamp(1_700_000_000);
+        let (contract_id, hunt_id, clue_id, player) = setup_norm_hunt(&env, "paris");
+
+        env.mock_all_auths();
+        let result = as_core_contract(&env, &contract_id, |env| {
+            HuntyCore::submit_answer(
+                env.clone(),
+                hunt_id,
+                clue_id,
+                player.clone(),
+                String::from_str(env, "  paris  "),
+                1,
+                env.ledger().timestamp(),
+            )
+        });
+        assert!(
+            result.is_ok(),
+            "answer with leading/trailing spaces should match: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_submit_answer_mixed_case_and_whitespace() {
+        // Clue stored with "New York"; player submits "  NEW YORK  " — must match.
+        let env = Env::default();
+        env.ledger().set_timestamp(1_700_000_000);
+        let (contract_id, hunt_id, clue_id, player) = setup_norm_hunt(&env, "New York");
+
+        env.mock_all_auths();
+        let result = as_core_contract(&env, &contract_id, |env| {
+            HuntyCore::submit_answer(
+                env.clone(),
+                hunt_id,
+                clue_id,
+                player.clone(),
+                String::from_str(env, "  NEW YORK  "),
+                1,
+                env.ledger().timestamp(),
+            )
+        });
+        assert!(
+            result.is_ok(),
+            "mixed case + padded whitespace should match: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_submit_answer_multiple_interior_spaces_do_not_match() {
+        // Normalization only trims leading/trailing whitespace; interior spaces are preserved.
+        // "new  york" (double space) must NOT match "new york".
+        let env = Env::default();
+        env.ledger().set_timestamp(1_700_000_000);
+        let (contract_id, hunt_id, clue_id, player) = setup_norm_hunt(&env, "new york");
+
+        env.mock_all_auths();
+        let result = as_core_contract(&env, &contract_id, |env| {
+            HuntyCore::submit_answer(
+                env.clone(),
+                hunt_id,
+                clue_id,
+                player.clone(),
+                String::from_str(env, "new  york"),
+                1,
+                env.ledger().timestamp(),
+            )
+        });
+        assert_eq!(
+            result,
+            Err(HuntErrorCode::InvalidAnswer),
+            "double interior space should NOT match single space"
+        );
+    }
+
+    #[test]
+    fn test_hash_comparison_is_deterministic() {
+        // Two different players submitting the same answer (different casing) must both succeed,
+        // proving the hash is deterministic and case-normalised consistently.
+        let env = Env::default();
+        env.ledger().set_timestamp(1_700_000_000);
+        let contract_id = env.register(HuntyCore, ());
+        let creator = Address::generate(&env);
+        let player1 = Address::generate(&env);
+        let player2 = Address::generate(&env);
+        env.mock_all_auths();
+
+        let hunt_id = as_core_contract(&env, &contract_id, |env| {
+            HuntyCore::create_hunt(
+                env.clone(),
+                creator.clone(),
+                String::from_str(env, "Hunt"),
+                String::from_str(env, "Desc"),
+                None,
+                None,
+                0,
+                None,
+            )
+            .unwrap()
+        });
+
+        let clue_id = as_core_contract(&env, &contract_id, |env| {
+            HuntyCore::add_clue(
+                env.clone(),
+                hunt_id,
+                String::from_str(env, "Q?"),
+                String::from_str(env, "answer"),
+                10,
+                true,
+                None,
+            )
+            .unwrap()
+        });
+
+        as_core_contract(&env, &contract_id, |env| {
+            HuntyCore::activate_hunt(env.clone(), hunt_id, creator.clone()).unwrap();
+            HuntyCore::register_player(env.clone(), hunt_id, player1.clone()).unwrap();
+            HuntyCore::register_player(env.clone(), hunt_id, player2.clone()).unwrap();
+        });
+
+        env.mock_all_auths();
+        let r1 = as_core_contract(&env, &contract_id, |env| {
+            HuntyCore::submit_answer(
+                env.clone(),
+                hunt_id,
+                clue_id,
+                player1.clone(),
+                String::from_str(env, "Answer"),
+                1,
+                env.ledger().timestamp(),
+            )
+        });
+        let r2 = as_core_contract(&env, &contract_id, |env| {
+            HuntyCore::submit_answer(
+                env.clone(),
+                hunt_id,
+                clue_id,
+                player2.clone(),
+                String::from_str(env, "ANSWER"),
+                2,
+                env.ledger().timestamp(),
+            )
+        });
+
+        assert!(r1.is_ok(), "player1 'Answer' should match: {:?}", r1);
+        assert!(r2.is_ok(), "player2 'ANSWER' should match: {:?}", r2);
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+
+    // ── Regression tests for max_attempts_per_clue enforcement (issue #433) ─
+
+    /// Helper: create a hunt with max_attempts set, one required clue, activate, register player.
+    fn setup_limited_attempt_hunt(
+        env: &Env,
+        max_attempts: u32,
+    ) -> (Address, u64, u32, Address, Address) {
+        let contract_id = env.register(HuntyCore, ());
+        let creator = Address::generate(env);
+        let player = Address::generate(env);
+        env.mock_all_auths();
+
+        let hunt_id = as_core_contract(env, &contract_id, |env| {
+            HuntyCore::create_hunt(
+                env.clone(),
+                creator.clone(),
+                String::from_str(env, "Hunt"),
+                String::from_str(env, "Desc"),
+                None,
+                None,
+                0,
+                None,
+            )
+            .unwrap()
+        });
+
+        as_core_contract(env, &contract_id, |env| {
+            HuntyCore::update_hunt(env.clone(), hunt_id, creator.clone(), max_attempts).unwrap();
+        });
+
+        let clue_id = as_core_contract(env, &contract_id, |env| {
+            HuntyCore::add_clue(
+                env.clone(),
+                hunt_id,
+                String::from_str(env, "Q?"),
+                String::from_str(env, "correct"),
+                10,
+                true,
+                None,
+            )
+            .unwrap()
+        });
+
+        as_core_contract(env, &contract_id, |env| {
+            HuntyCore::activate_hunt(env.clone(), hunt_id, creator.clone()).unwrap();
+            HuntyCore::register_player(env.clone(), hunt_id, player.clone()).unwrap();
+        });
+
+        (contract_id, hunt_id, clue_id, player, creator)
+    }
+
+    /// Submit a wrong answer, incrementing a counter-based nonce.
+    fn submit_wrong(
+        env: &Env,
+        contract_id: &Address,
+        hunt_id: u64,
+        clue_id: u32,
+        player: &Address,
+        nonce: u64,
+    ) -> Result<(), HuntErrorCode> {
+        env.mock_all_auths();
+        as_core_contract(env, contract_id, |env| {
+            HuntyCore::submit_answer(
+                env.clone(),
+                hunt_id,
+                clue_id,
+                player.clone(),
+                String::from_str(env, "wrong"),
+                nonce,
+                env.ledger().timestamp(),
+            )
+        })
+    }
+
+    #[test]
+    fn test_max_attempts_exceeded_after_limit() {
+        // With max_attempts = 3: first two wrong answers return InvalidAnswer;
+        // the third (hitting the limit) returns MaxAttemptsExceeded.
+        let env = Env::default();
+        env.ledger().set_timestamp(1_700_000_000);
+        let (contract_id, hunt_id, clue_id, player, _) = setup_limited_attempt_hunt(&env, 3);
+
+        assert_eq!(submit_wrong(&env, &contract_id, hunt_id, clue_id, &player, 1), Err(HuntErrorCode::InvalidAnswer));
+        assert_eq!(submit_wrong(&env, &contract_id, hunt_id, clue_id, &player, 2), Err(HuntErrorCode::InvalidAnswer));
+        assert_eq!(
+            submit_wrong(&env, &contract_id, hunt_id, clue_id, &player, 3),
+            Err(HuntErrorCode::MaxAttemptsExceeded),
+            "third wrong answer should hit the limit"
+        );
+    }
+
+    #[test]
+    fn test_correct_answer_on_last_attempt_succeeds() {
+        // With max_attempts = 2: one wrong answer, then correct on the last slot → success.
+        let env = Env::default();
+        env.ledger().set_timestamp(1_700_000_000);
+        let (contract_id, hunt_id, clue_id, player, _) = setup_limited_attempt_hunt(&env, 2);
+
+        assert_eq!(submit_wrong(&env, &contract_id, hunt_id, clue_id, &player, 1), Err(HuntErrorCode::InvalidAnswer));
+
+        env.mock_all_auths();
+        let result = as_core_contract(&env, &contract_id, |env| {
+            HuntyCore::submit_answer(
+                env.clone(),
+                hunt_id,
+                clue_id,
+                player.clone(),
+                String::from_str(env, "correct"),
+                2,
+                env.ledger().timestamp(),
+            )
+        });
+        assert!(result.is_ok(), "correct answer on last attempt should succeed: {:?}", result);
+    }
+
+    #[test]
+    fn test_attempt_counter_persists_across_calls() {
+        // Submit one wrong answer, then read back progress and verify failed_attempts = 1.
+        let env = Env::default();
+        env.ledger().set_timestamp(1_700_000_000);
+        let (contract_id, hunt_id, clue_id, player, _) = setup_limited_attempt_hunt(&env, 5);
+
+        assert_eq!(submit_wrong(&env, &contract_id, hunt_id, clue_id, &player, 1), Err(HuntErrorCode::InvalidAnswer));
+
+        // Second wrong answer in a separate call — counter must have persisted
+        assert_eq!(submit_wrong(&env, &contract_id, hunt_id, clue_id, &player, 2), Err(HuntErrorCode::InvalidAnswer));
+
+        // Read progress and verify the stored count
+        let progress = as_core_contract(&env, &contract_id, |env| {
+            HuntyCore::get_player_progress(env.clone(), hunt_id, player.clone()).unwrap()
+        });
+        assert_eq!(
+            progress.failed_attempts.get(clue_id).unwrap_or(0),
+            2,
+            "failed_attempts for clue should be 2 after two wrong submissions"
+        );
+    }
+
+    #[test]
+    fn test_max_attempts_equals_one() {
+        // With max_attempts = 1: the very first wrong answer hits the limit immediately.
+        let env = Env::default();
+        env.ledger().set_timestamp(1_700_000_000);
+        let (contract_id, hunt_id, clue_id, player, _) = setup_limited_attempt_hunt(&env, 1);
+
+        assert_eq!(
+            submit_wrong(&env, &contract_id, hunt_id, clue_id, &player, 1),
+            Err(HuntErrorCode::MaxAttemptsExceeded),
+            "max_attempts=1: first wrong answer should immediately exceed the limit"
+        );
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+
     #[test]
     fn test_get_clue_excludes_answer_hash() {
         let env = Env::default();
