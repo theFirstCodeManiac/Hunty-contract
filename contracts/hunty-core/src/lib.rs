@@ -1063,14 +1063,7 @@ impl HuntyCore {
             return false;
         };
 
-        let mut correct = false;
-        for i in 0..clue.answer_hashes.len() {
-            if clue.answer_hashes.get(i).unwrap() == submitted_hash {
-                correct = true;
-                break;
-            }
-        }
-        correct
+        clue.answer_hashes.contains(&submitted_hash)
     }
 
     /// This function verifies the submitted answer by hashing it and comparing
@@ -1203,15 +1196,7 @@ impl HuntyCore {
         let submitted_hash = Self::normalize_and_hash_answer(&env, hunt_id, clue_id, &answer)
             .map_err(HuntErrorCode::from)?;
 
-        let mut answer_correct = false;
-        for i in 0..clue.answer_hashes.len() {
-            if clue.answer_hashes.get(i).unwrap() == submitted_hash {
-                answer_correct = true;
-                break;
-            }
-        }
-
-        if !answer_correct {
+        if !clue.answer_hashes.contains(&submitted_hash) {
             Storage::save_player_progress(&env, &progress);
             let incorrect_event = AnswerIncorrectEvent {
                 hunt_id,
