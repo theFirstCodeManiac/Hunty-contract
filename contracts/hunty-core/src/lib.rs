@@ -230,6 +230,14 @@ impl HuntyCore {
             };
 
             Storage::save_clue(&env, hunt_id, &cloned_clue);
+
+            // Track required clue IDs for gas-efficient completion checks
+            if cloned_clue.is_required {
+                let mut required_ids = Storage::get_required_clues(&env, hunt_id);
+                required_ids.push_back(cloned_clue.clue_id);
+                Storage::set_required_clues(&env, hunt_id, &required_ids);
+            }
+
             hunt.total_clues += 1;
             if cloned_clue.is_required {
                 hunt.required_clues += 1;
@@ -380,6 +388,14 @@ impl HuntyCore {
             difficulty: difficulty.unwrap_or(1),
         };
         Storage::save_clue(&env, hunt_id, &clue);
+
+        // Track required clue IDs in separate storage for gas-efficient completion checks
+        if is_required {
+            let mut required_ids = Storage::get_required_clues(&env, hunt_id);
+            required_ids.push_back(clue_id);
+            Storage::set_required_clues(&env, hunt_id, &required_ids);
+        }
+
         let mut updated = hunt;
         updated.total_clues += 1;
         if is_required {
@@ -499,8 +515,8 @@ impl HuntyCore {
         let offset = page.saturating_mul(effective_page_size);
         let raw = Storage::list_clues_for_hunt(&env, hunt_id, offset, effective_page_size);
         let mut out = Vec::new(&env);
-        for i in start..end {
-            if let Some(c) = raw.get(i as u32) {
+        for i in 0..raw.len() {
+            if let Some(c) = raw.get(i) {
                 out.push_back(ClueInfo {
                     clue_id: c.clue_id,
                     question: c.question,
@@ -1366,7 +1382,15 @@ impl HuntyCore {
             }
         }
 
-        if answer_hash != clue.answer_hash {
+        let mut answer_correct = false;
+        for i in 0..clue.answer_hashes.len() {
+            if clue.answer_hashes.get(i).unwrap() == answer_hash {
+                answer_correct = true;
+                break;
+            }
+        }
+
+        if !answer_correct {
             if hunt.max_submissions_per_minute > 0 {
                 progress.recent_submissions.push_back(current_time);
                 Storage::save_player_progress(&env, &progress);
@@ -1511,25 +1535,46 @@ impl HuntyCore {
         hunt_id: u64,
         progress: &PlayerProgress,
     ) -> bool {
-        // Get all clues for the hunt
-        let clue_count = Storage::get_clue_counter(env, hunt_id);
-        let all_clues = Storage::list_clues_for_hunt(env, hunt_id, 0, clue_count);
+        // First get the hunts required clue count
+        let hunt = match Storage::get_hunt(env, hunt_id) {
+            Some(h) => h,
+            None => return false,
+        };
 
-        // Iterate through all clues and check if all required ones are completed
-        for i in 0..all_clues.len() {
-            let clue = all_clues.get(i).unwrap();
+        if hunt.required_clues == 0 {
+            return true;
+        }
 
-            // If this is a required clue
-            if clue.is_required {
-                // Check if player has completed it
-                if !progress.has_completed_clue(clue.clue_id) {
-                    // Found a required clue that's not completed
+        // Quick early exit: player hasn't completed enough clues total
+        if progress.completed_clues.len() < hunt.required_clues as u32 {
+            return false;
+        }
+
+        // Load only the required clue IDs (much cheaper than loading full clues)
+        let required_ids = Storage::get_required_clues(env, hunt_id);
+
+        // If the list is empty but hunt has required clues, fall back to scanning
+        // all clues (backward compatibility for pre-migration hunts)
+        if required_ids.is_empty() {
+            let clue_count = Storage::get_clue_counter(env, hunt_id);
+            let all_clues = Storage::list_clues_for_hunt(env, hunt_id, 0, clue_count);
+            for i in 0..all_clues.len() {
+                let clue = all_clues.get(i).unwrap();
+                if clue.is_required && !progress.has_completed_clue(clue.clue_id) {
                     return false;
                 }
             }
+            return true;
         }
 
-        // All required clues are completed
+        // Fast path: check only the required clue IDs
+        for i in 0..required_ids.len() {
+            let cid = required_ids.get(i).unwrap();
+            if !progress.has_completed_clue(cid) {
+                return false;
+            }
+        }
+
         true
     }
 
