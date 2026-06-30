@@ -13,6 +13,7 @@ impl Storage {
     const ADMIN_KEY: soroban_sdk::Symbol = symbol_short!("ADMIN");
     const MINTER_KEY: soroban_sdk::Symbol = symbol_short!("MNTR");
     const REWARD_MGR_KEY: soroban_sdk::Symbol = symbol_short!("RWDMGR");
+    const HAS_AUTH_KEY: soroban_sdk::Symbol = symbol_short!("HAUTH");
 
     fn nft_key(nft_id: u64) -> (soroban_sdk::Symbol, u64) {
         (Self::NFT_KEY, nft_id)
@@ -32,6 +33,10 @@ impl Storage {
 
     fn minter_key(minter: &Address) -> (soroban_sdk::Symbol, Address) {
         (Self::MINTER_KEY, minter.clone())
+    }
+
+    fn authorized_contract_key(contract: &Address) -> (soroban_sdk::Symbol, Address) {
+        (symbol_short!("AUTH"), contract.clone())
     }
 
     pub fn remove_nft(env: &Env, nft_id: u64) {
@@ -75,6 +80,28 @@ impl Storage {
     #[allow(dead_code)]
     pub fn is_minter(env: &Env, minter: &Address) -> bool {
         let key = Self::minter_key(minter);
+        env.storage().persistent().get(&key).unwrap_or(false)
+    }
+
+    // --- Authorized cross-contract callers ---
+
+    pub fn has_authorized_contracts(env: &Env) -> bool {
+        env.storage().instance().get(&Self::HAS_AUTH_KEY).unwrap_or(false)
+    }
+
+    pub fn add_authorized_contract(env: &Env, contract: &Address) {
+        let key = Self::authorized_contract_key(contract);
+        env.storage().persistent().set(&key, &true);
+        env.storage().instance().set(&Self::HAS_AUTH_KEY, &true);
+    }
+
+    pub fn remove_authorized_contract(env: &Env, contract: &Address) {
+        let key = Self::authorized_contract_key(contract);
+        env.storage().persistent().remove(&key);
+    }
+
+    pub fn is_authorized_contract(env: &Env, contract: &Address) -> bool {
+        let key = Self::authorized_contract_key(contract);
         env.storage().persistent().get(&key).unwrap_or(false)
     }
 

@@ -5,7 +5,7 @@ mod test {
     use crate::types::RewardConfig;
     use crate::RewardManager;
     use soroban_sdk::testutils::Address as _;
-    use soroban_sdk::{symbol_short, token, Address, Env};
+    use soroban_sdk::{symbol_short, token, Address, Env, IntoVal, Symbol, Val};
 
     /// Registers the RewardManager contract and a mock SAC token.
     /// Returns (contract_id, token_address, token_admin).
@@ -1411,5 +1411,165 @@ mod test {
 
         // Recipient received nothing
         assert_eq!(get_balance(&env, &token_address, &recipient), 0);
+    }
+
+    // ========== Authorized Contracts ==========
+
+    #[test]
+    fn test_admin_adds_authorized_contract() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (contract_id, token_address, _) = setup(&env);
+        let admin = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            RewardManager::initialize(env.clone(), admin.clone(), token_address).unwrap();
+            let authorized = Address::generate(&env);
+            let result = RewardManager::add_authorized_contract(
+                env.clone(),
+                admin.clone(),
+                authorized.clone(),
+            );
+            assert!(result.is_ok());
+            assert!(Storage::is_authorized_contract(&env, &authorized));
+        });
+    }
+
+    #[test]
+    fn test_non_admin_cannot_add_authorized_contract() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (contract_id, token_address, _) = setup(&env);
+        let admin = Address::generate(&env);
+        let attacker = Address::generate(&env);
+        let authorized = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            RewardManager::initialize(env.clone(), admin.clone(), token_address).unwrap();
+            let result = RewardManager::add_authorized_contract(
+                env.clone(),
+                attacker,
+                authorized.clone(),
+            );
+            assert_eq!(result, Err(RewardErrorCode::Unauthorized));
+            assert!(!Storage::is_authorized_contract(&env, &authorized));
+        });
+    }
+
+    #[test]
+    fn test_authorized_contract_can_call_distribute() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (contract_id, token_address, token_admin) = setup(&env);
+        let admin = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let player = Address::generate(&env);
+        let authorized = Address::generate(&env);
+
+        mint_tokens(&env, &token_address, &token_admin, &creator, 10_000);
+
+        // Initialize the contract and set up authorized contracts
+        env.as_contract(&contract_id, || {
+            RewardManager::initialize(env.clone(), admin.clone(), token_address.clone()).unwrap();
+            Storage::add_authorized_contract(&env, &authorized);
+            RewardManager::create_reward_pool(env.clone(), creator.clone(), 1, 0).unwrap();
+            RewardManager::fund_reward_pool(env.clone(), creator.clone(), 1, 5_000).unwrap();
+        });
+
+        let mut pool_balance_before = 0i128;
+        env.as_contract(&contract_id, || {
+            pool_balance_before = RewardManager::get_pool_balance(env.clone(), 1);
+        });
+        assert!(pool_balance_before >= 2_000);
+
+        // Call distribute_rewards from the authorized contract context
+        // This simulates a cross-contract call where env.caller() == authorized
+        let config = xlm_only_config(&env, 2_000);
+        env.as_contract(&authorized, || {
+            let mut args: Vec<Val> = Vec::new(&env);
+            args.push_back((1u64).into_val(&env));
+            args.push_back(player.clone().into_val(&env));
+            args.push_back(config.clone().into_val(&env));
+
+            let result = env.try_invoke_contract::<(), RewardErrorCode>(
+                &contract_id,
+                &Symbol::new(&env, "distribute_rewards"),
+                args,
+            );
+            assert!(result.is_ok(), "invocation should succeed");
+            let inner: Result<(), RewardErrorCode> = result.unwrap();
+            assert!(inner.is_ok(), "distribute_rewards should return Ok");
+        });
+
+        // Verify player received tokens
+        assert_eq!(get_balance(&env, &token_address, &player), 2_000);
+    }
+
+    #[test]
+    fn test_unauthorized_contract_cannot_call_distribute() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (contract_id, token_address, token_admin) = setup(&env);
+        let admin = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let player = Address::generate(&env);
+        let authorized = Address::generate(&env);
+        let unauthorized = Address::generate(&env);
+
+        mint_tokens(&env, &token_address, &token_admin, &creator, 10_000);
+
+        env.as_contract(&contract_id, || {
+            RewardManager::initialize(env.clone(), admin.clone(), token_address).unwrap();
+            RewardManager::create_reward_pool(env.clone(), creator.clone(), 1, 0).unwrap();
+            RewardManager::fund_reward_pool(env.clone(), creator.clone(), 1, 5_000).unwrap();
+
+            // Configure authorized contracts — only 'authorized' is allowed
+            Storage::add_authorized_contract(&env, &authorized);
+        });
+
+        // Try to distribute from an unauthorized contract context
+        let config = xlm_only_config(&env, 2_000);
+        env.as_contract(&unauthorized, || {
+            let mut args: Vec<Val> = Vec::new(&env);
+            args.push_back((1u64).into_val(&env));
+            args.push_back(player.clone().into_val(&env));
+            args.push_back(config.clone().into_val(&env));
+
+            let result = env.try_invoke_contract::<(), RewardErrorCode>(
+                &contract_id,
+                &Symbol::new(&env, "distribute_rewards"),
+                args,
+            );
+            // The invocation should succeed but return Unauthorized
+            assert!(result.is_ok(), "invocation should succeed");
+            let inner: Result<(), RewardErrorCode> = result.unwrap();
+            assert_eq!(inner, Err(RewardErrorCode::Unauthorized));
+        });
+
+        // Verify player received nothing
+        assert_eq!(get_balance(&env, &token_address, &player), 0);
+    }
+
+    #[test]
+    fn test_admin_removes_authorized_contract() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (contract_id, token_address, _) = setup(&env);
+        let admin = Address::generate(&env);
+        let authorized = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            RewardManager::initialize(env.clone(), admin.clone(), token_address).unwrap();
+            Storage::add_authorized_contract(&env, &authorized);
+            assert!(Storage::is_authorized_contract(&env, &authorized));
+
+            let result = RewardManager::remove_authorized_contract(
+                env.clone(),
+                admin.clone(),
+                authorized.clone(),
+            );
+            assert!(result.is_ok());
+            assert!(!Storage::is_authorized_contract(&env, &authorized));
+        });
     }
 }

@@ -17,6 +17,7 @@ impl Storage {
     const HUNTY_CORE_KEY: soroban_sdk::Symbol = symbol_short!("HCORE");
     const TOTAL_XLM_DST_KEY: soroban_sdk::Symbol = symbol_short!("TXDST");
     const IN_DISTRIBUTION_KEY: soroban_sdk::Symbol = symbol_short!("IN_DIST");
+    const HAS_AUTH_KEY: soroban_sdk::Symbol = symbol_short!("HAUTH");
 
     // ========== XLM Token Address ==========
 
@@ -153,6 +154,32 @@ impl Storage {
 
     pub fn get_total_xlm_distributed(env: &Env) -> i128 {
         env.storage().persistent().get(&Self::TOTAL_XLM_DST_KEY).unwrap_or(0)
+    }
+
+    // ========== Authorized Cross-Contract Callers ==========
+
+    fn authorized_contract_key(contract: &Address) -> (soroban_sdk::Symbol, Address) {
+        (symbol_short!("AUTH"), contract.clone())
+    }
+
+    pub fn has_authorized_contracts(env: &Env) -> bool {
+        env.storage().instance().get(&Self::HAS_AUTH_KEY).unwrap_or(false)
+    }
+
+    pub fn add_authorized_contract(env: &Env, contract: &Address) {
+        let key = Self::authorized_contract_key(contract);
+        env.storage().persistent().set(&key, &true);
+        env.storage().instance().set(&Self::HAS_AUTH_KEY, &true);
+    }
+
+    pub fn remove_authorized_contract(env: &Env, contract: &Address) {
+        let key = Self::authorized_contract_key(contract);
+        env.storage().persistent().remove(&key);
+    }
+
+    pub fn is_authorized_contract(env: &Env, contract: &Address) -> bool {
+        let key = Self::authorized_contract_key(contract);
+        env.storage().persistent().get(&key).unwrap_or(false)
     }
 
     // ========== Reentrancy Guard ==========

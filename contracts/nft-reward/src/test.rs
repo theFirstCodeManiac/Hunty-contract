@@ -509,3 +509,131 @@ fn test_get_nft_owner_matches_owner_of() {
     assert_eq!(client.owner_of(&nft_id), client.get_nft_owner(&nft_id));
     assert_eq!(client.get_nft_owner(&nft_id), Some(player));
 }
+
+// ========== Authorized Contracts ==========
+
+#[test]
+fn test_admin_adds_authorized_contract() {
+    let env = setup_env();
+    let admin = Address::generate(&env);
+    let contract = Address::generate(&env);
+    let contract_id = env.register_contract(None, NftReward);
+    let client = NftRewardClient::new(&env, &contract_id);
+    client.initialize(&admin, &None);
+
+    let result = client.add_authorized_contract(&admin, &contract);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_non_admin_cannot_add_authorized_contract() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+    env.ledger().set_timestamp(1000);
+    let admin = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+    let contract = Address::generate(&env);
+    let contract_id = env.register_contract(None, NftReward);
+    let client = NftRewardClient::new(&env, &contract_id);
+    client.initialize(&admin, &None);
+
+    let result = client.try_add_authorized_contract(&non_admin, &contract);
+    assert_eq!(result, Ok(Err(NftErrorCode::Unauthorized)));
+}
+
+#[test]
+fn test_admin_removes_authorized_contract() {
+    let env = setup_env();
+    let admin = Address::generate(&env);
+    let contract = Address::generate(&env);
+    let contract_id = env.register_contract(None, NftReward);
+    let client = NftRewardClient::new(&env, &contract_id);
+    client.initialize(&admin, &None);
+    client.add_authorized_contract(&admin, &contract).unwrap();
+
+    let result = client.remove_authorized_contract(&admin, &contract);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_authorized_contract_can_mint() {
+    let env = setup_env();
+    let admin = Address::generate(&env);
+    let authorized = Address::generate(&env);
+    let player = Address::generate(&env);
+    let contract_id = env.register_contract(None, NftReward);
+    let client = NftRewardClient::new(&env, &contract_id);
+    let metadata = create_metadata(&env, "Auth Mint", "Authorized mint", "ipfs://auth");
+
+    client.initialize(&admin, &None);
+    client.add_authorized_contract(&admin, &authorized).unwrap();
+
+    let nft_id = client.mint_reward_nft(&authorized, &1, &player, &metadata);
+    assert!(nft_id > 0);
+    assert_eq!(client.owner_of(&nft_id), Some(player));
+}
+
+#[test]
+#[should_panic(expected = "HostError")]
+fn test_unauthorized_contract_cannot_mint() {
+    let env = setup_env();
+    let admin = Address::generate(&env);
+    let authorized = Address::generate(&env);
+    let unauthorized = Address::generate(&env);
+    let player = Address::generate(&env);
+    let contract_id = env.register_contract(None, NftReward);
+    let client = NftRewardClient::new(&env, &contract_id);
+    let metadata = create_metadata(&env, "Unauth Mint", "Should fail", "ipfs://unauth");
+
+    client.initialize(&admin, &None);
+    client.add_authorized_contract(&admin, &authorized).unwrap();
+
+    // Unauthorized minter should panic
+    client.mint_reward_nft(&unauthorized, &1, &player, &metadata);
+}
+
+#[test]
+fn test_authorized_contract_can_mint_from_map() {
+    let env = setup_env();
+    let admin = Address::generate(&env);
+    let authorized = Address::generate(&env);
+    let player = Address::generate(&env);
+    let contract_id = env.register_contract(None, NftReward);
+    let client = NftRewardClient::new(&env, &contract_id);
+    let metadata = create_metadata(&env, "Map Auth", "Map authorized", "ipfs://mapauth");
+
+    client.initialize(&admin, &None);
+    client.add_authorized_contract(&admin, &authorized).unwrap();
+
+    let mut map: Map<Symbol, Val> = Map::new(&env);
+    map.set(Symbol::new(&env, "title"), metadata.title.clone().into_val(&env));
+    map.set(Symbol::new(&env, "description"), metadata.description.clone().into_val(&env));
+    map.set(Symbol::new(&env, "image_uri"), metadata.image_uri.clone().into_val(&env));
+    map.set(Symbol::new(&env, "hunt_title"), metadata.hunt_title.clone().into_val(&env));
+
+    let nft_id = client.mint_reward_nft_from_map(&authorized, &1, &player, &map);
+    assert!(nft_id > 0);
+}
+
+#[test]
+#[should_panic(expected = "HostError")]
+fn test_unauthorized_contract_cannot_mint_from_map() {
+    let env = setup_env();
+    let admin = Address::generate(&env);
+    let authorized = Address::generate(&env);
+    let unauthorized = Address::generate(&env);
+    let player = Address::generate(&env);
+    let contract_id = env.register_contract(None, NftReward);
+    let client = NftRewardClient::new(&env, &contract_id);
+    let metadata = create_metadata(&env, "Map Unauth", "Should fail", "ipfs://mapunauth");
+
+    client.initialize(&admin, &None);
+    client.add_authorized_contract(&admin, &authorized).unwrap();
+
+    let mut map: Map<Symbol, Val> = Map::new(&env);
+    map.set(Symbol::new(&env, "title"), metadata.title.into_val(&env));
+    map.set(Symbol::new(&env, "description"), metadata.description.into_val(&env));
+    map.set(Symbol::new(&env, "image_uri"), metadata.image_uri.into_val(&env));
+
+    client.mint_reward_nft_from_map(&unauthorized, &1, &player, &map);
+}

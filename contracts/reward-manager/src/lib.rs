@@ -145,6 +145,38 @@ impl RewardManager {
         Ok(())
     }
 
+    /// Adds a contract to the authorized callers list for `distribute_rewards`.
+    /// Only the contract admin can call this.
+    pub fn add_authorized_contract(
+        env: Env,
+        admin: Address,
+        contract: Address,
+    ) -> Result<(), RewardErrorCode> {
+        admin.require_auth();
+        let configured_admin = Storage::get_admin(&env).ok_or(RewardErrorCode::NotInitialized)?;
+        if configured_admin != admin {
+            return Err(RewardErrorCode::Unauthorized);
+        }
+        Storage::add_authorized_contract(&env, &contract);
+        Ok(())
+    }
+
+    /// Removes a contract from the authorized callers list.
+    /// Only the contract admin can call this.
+    pub fn remove_authorized_contract(
+        env: Env,
+        admin: Address,
+        contract: Address,
+    ) -> Result<(), RewardErrorCode> {
+        admin.require_auth();
+        let configured_admin = Storage::get_admin(&env).ok_or(RewardErrorCode::NotInitialized)?;
+        if configured_admin != admin {
+            return Err(RewardErrorCode::Unauthorized);
+        }
+        Storage::remove_authorized_contract(&env, &contract);
+        Ok(())
+    }
+
     /// Creates a reward pool for a specific hunt.
     ///
     /// Must be called before `fund_reward_pool`. Only the creator is authorized
@@ -417,6 +449,14 @@ impl RewardManager {
         player_address: Address,
         reward_config: RewardConfig,
     ) -> Result<(), RewardErrorCode> {
+        // Validate caller is an authorized contract (when configured)
+        if Storage::has_authorized_contracts(&env) {
+            let caller = env.caller();
+            if !Storage::is_authorized_contract(&env, &caller) {
+                return Err(RewardErrorCode::Unauthorized);
+            }
+        }
+
         // Validate configuration
         if !reward_config.is_valid() {
             return Err(RewardErrorCode::InvalidConfig);

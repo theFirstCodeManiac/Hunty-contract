@@ -139,6 +139,15 @@ impl NftReward {
         Ok(())
     }
 
+    fn require_authorized_caller(env: &Env, caller: &Address) {
+        if Storage::has_authorized_contracts(env) {
+            caller.require_auth();
+            if !Storage::is_authorized_contract(env, caller) {
+                panic_with_error!(env, crate::errors::NftErrorCode::Unauthorized);
+            }
+        }
+    }
+
     /// Mints a unique NFT as a reward for hunt completion.
     ///
     /// `minter` must be an authorized minter (and must sign the transaction) when the
@@ -155,11 +164,12 @@ impl NftReward {
     /// The unique NFT ID of the minted NFT
     pub fn mint_reward_nft(
         env: Env,
-        _minter: Address,
+        minter: Address,
         hunt_id: u64,
         player_address: Address,
         metadata: NftMetadata,
     ) -> u64 {
+        Self::require_authorized_caller(&env, &minter);
         Self::mint_reward_nft_impl(env, hunt_id, player_address, metadata, false)
     }
 
@@ -182,15 +192,12 @@ impl NftReward {
     /// - "transferable": bool
     pub fn mint_reward_nft_from_map(
         env: Env,
-        _minter: Address,
+        minter: Address,
         hunt_id: u64,
         player_address: Address,
         metadata: Map<Symbol, Val>,
     ) -> u64 {
-        // Ensure only the configured RewardManager contract can call this function
-        if let Some(reward_mgr) = Storage::get_reward_manager(&env) {
-            reward_mgr.require_auth();
-        }
+        Self::require_authorized_caller(&env, &minter);
         use soroban_sdk::TryFromVal;
 
         let title = metadata
@@ -344,6 +351,28 @@ impl NftReward {
     ) -> Result<(), crate::errors::NftErrorCode> {
         Self::require_admin(&env, &admin)?;
         Storage::save_reward_manager(&env, &reward_manager);
+        Ok(())
+    }
+
+    /// Adds a contract to the authorized callers list. Only the admin can call this.
+    pub fn add_authorized_contract(
+        env: Env,
+        admin: Address,
+        contract: Address,
+    ) -> Result<(), crate::errors::NftErrorCode> {
+        Self::require_admin(&env, &admin)?;
+        Storage::add_authorized_contract(&env, &contract);
+        Ok(())
+    }
+
+    /// Removes a contract from the authorized callers list. Only the admin can call this.
+    pub fn remove_authorized_contract(
+        env: Env,
+        admin: Address,
+        contract: Address,
+    ) -> Result<(), crate::errors::NftErrorCode> {
+        Self::require_admin(&env, &admin)?;
+        Storage::remove_authorized_contract(&env, &contract);
         Ok(())
     }
 
