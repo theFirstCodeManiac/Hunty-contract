@@ -13,7 +13,7 @@ use reward_interface::RewardErrorCode;
 use soroban_sdk::{
     contract, contractimpl, Address, Bytes, BytesN, Env, IntoVal, String, Symbol, Val, Vec, TryFromVal,
 };
-use soroban_sdk::xdr::ToXdr;
+use soroban_sdk::xdr::ToXdr; 
 
 const MAX_TITLE_BYTES: u32 = 200;
 const MAX_DESCRIPTION_BYTES: u32 = 2000;
@@ -47,6 +47,12 @@ impl HuntyCore {
         Storage::set_admin(&env, &admin);
         Ok(())
     }
+
+    fn get_player_total_completed_hunts(env: &Env, player: &Address) -> u32 {
+    // This would ideally use a global player stats storage
+    // For now, we can implement a simple version or extend Storage
+        Storage::get_player_completed_hunt_count(env, player)
+}
 
     /// Pauses all player operations (registrations, answers, rewards) globally.
     pub fn pause_contract(env: Env, admin: Address) -> Result<(), HuntErrorCode> {
