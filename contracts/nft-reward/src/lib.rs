@@ -31,6 +31,15 @@ pub struct NftMetadata {
     pub royalty_bps: Option<u32>,
 }
 
+/// Collection-level statistics included in mint events for indexers.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NftCollectionStats {
+    pub total_supply: u64,
+    pub total_hunts: u64,
+    pub total_owners: u64,
+}
+
 fn image_uri_is_valid(uri: &String) -> bool {
     let len = uri.len();
     if len == 0 || len > 200 {
@@ -64,6 +73,18 @@ pub struct NftMetadataResponse {
     pub royalty_bps: Option<u32>,
     /// Schema version of the NFT metadata.
     pub schema_version: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NftCore {
+    pub nft_id: u64,
+    pub hunt_id: u64,
+    pub owner: Address,
+    pub completion_player: Address,
+    pub transferable: bool,
+    pub minted_at: u64,
+    pub locked: bool,
 }
 
 /// NFT data structure stored on-chain.
@@ -401,6 +422,7 @@ impl NftReward {
             nft_id,
             hunt_id,
             owner: player_address.clone(),
+            completion_player: player_address.clone(),
             metadata: metadata.clone(),
             transferable,
             minted_at,
@@ -419,7 +441,15 @@ impl NftReward {
             owner: player_address,
             rarity: metadata.rarity,
             tier: metadata.tier,
-            metadata,
+            metadata: metadata.clone(),
+            hunt_title: metadata.hunt_title.clone(),
+            total_minted_for_hunt: Storage::get_nft_count_for_hunt(&env, hunt_id),
+            completion_rank: Storage::get_nft_count_for_hunt(&env, hunt_id) as u32,
+            collection_stats: NftCollectionStats {
+                total_supply: Storage::get_nft_counter(&env),
+                total_hunts: Storage::get_total_hunts(&env),
+                total_owners: Storage::get_total_owners(&env),
+            },
             minted_at,
         };
         env.events()
@@ -481,7 +511,7 @@ impl NftReward {
 
         for nft_id in all_ids.iter() {
             if let Some(mut nft) = Storage::get_nft(&env, nft_id) {
-                if let Some(new_uri) = replace_prefix(
+                if let Some(new_uri) = Self::replace_prefix(
                     &env,
                     &nft.metadata.image_uri,
                     &old_prefix,
@@ -504,6 +534,41 @@ impl NftReward {
         );
 
         Ok(updated)
+    }
+
+    fn replace_prefix(
+        env: &Env,
+        uri: &String,
+        old_prefix: &String,
+        new_prefix: &String,
+    ) -> Option<String> {
+        let uri_len = uri.len() as usize;
+        let old_len = old_prefix.len() as usize;
+        let new_len = new_prefix.len() as usize;
+
+        if uri_len < old_len {
+            return None;
+        }
+
+        let mut buf_uri = [0u8; 256];
+        let mut buf_old = [0u8; 256];
+        let mut buf_new = [0u8; 256];
+
+        uri.copy_into_slice(&mut buf_uri[..uri_len.min(256)]);
+        old_prefix.copy_into_slice(&mut buf_old[..old_len.min(256)]);
+        new_prefix.copy_into_slice(&mut buf_new[..new_len.min(256)]);
+
+        if buf_uri[..old_len] == buf_old[..old_len] {
+            let mut final_buf = [0u8; 512];
+            final_buf[..new_len].copy_from_slice(&buf_new[..new_len]);
+            let suffix_len = uri_len - old_len;
+            final_buf[new_len..new_len + suffix_len].copy_from_slice(&buf_uri[old_len..uri_len]);
+            let total_len = new_len + suffix_len;
+            if let Ok(text) = core::str::from_utf8(&final_buf[..total_len]) {
+                return Some(String::from_str(env, text));
+            }
+        }
+        None
     }
 
     /// Updates mutable metadata fields (description, image_uri). Owner only.
@@ -548,6 +613,48 @@ impl NftReward {
     /// Returns the total number of NFTs minted so far.
     pub fn total_supply(env: Env) -> u64 {
         Storage::get_nft_counter(&env)
+    }
+
+    /// Returns the total count of NFTs currently in the contract.
+    /// Equivalent to total_supply() but with a dedicated function name for clarity.
+    pub fn get_total_nft_count(env: Env) -> u64 {
+        Storage::get_nft_counter(&env)
+    }
+
+    /// Lists all NFTs minted by the contract with pagination support.
+    ///
+    /// Returns a vector of NftData structs, paginated by offset and limit.
+    /// The limit is bounded to MAX_SCAN_LIMIT (1000) to prevent excessive gas consumption.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `offset` - The starting index for pagination (0-based)
+    /// * `limit` - The maximum number of NFTs to return (capped at MAX_SCAN_LIMIT)
+    ///
+    /// # Returns
+    /// Vec<NftData> - A vector of NFT data structures, bounded by limit or remaining NFTs
+    pub fn list_all_nfts(env: Env, offset: u32, limit: u32) -> Vec<NftData> {
+        let all_nft_ids = Storage::get_all_nft_ids(&env);
+        let total_count = all_nft_ids.len();
+
+        if offset >= total_count {
+            return Vec::new(&env);
+        }
+
+        // Apply bounded scan limit to prevent excessive gas consumption
+        let bounded_limit = limit.min(MAX_SCAN_LIMIT);
+        let end = offset.saturating_add(bounded_limit).min(total_count);
+
+        let mut result = Vec::new(&env);
+        for i in offset..end {
+            if let Some(nft_id) = all_nft_ids.get(i) {
+                if let Some(nft_data) = Storage::get_nft(&env, nft_id) {
+                    result.push_back(nft_data);
+                }
+            }
+        }
+
+        result
     }
 
     /// Returns the owner of an NFT.
@@ -669,31 +776,13 @@ impl NftReward {
     pub fn search_by_title(env: Env, query: String) -> Vec<u64> {
         let all_nft_ids = Storage::get_all_nft_ids(&env);
         let mut results = Vec::new(&env);
-        
-        let query_lower = {
-            let mut lower = String::new(&env);
-            for c in query.chars() {
-                lower.push_char(c.to_ascii_lowercase());
-            }
-            lower
-        };
-
         for nft_id in all_nft_ids.iter() {
             if let Some(nft) = Storage::get_nft(&env, nft_id) {
-                let title_lower = {
-                    let mut lower = String::new(&env);
-                    for c in nft.metadata.title.chars() {
-                        lower.push_char(c.to_ascii_lowercase());
-                    }
-                    lower
-                };
-                
-                if title_lower.contains(&query_lower) {
+                if string_contains_ignore_case(&nft.metadata.title, &query) {
                     results.push_back(nft_id);
                 }
             }
         }
-        
         results
     }
 
@@ -702,31 +791,13 @@ impl NftReward {
     pub fn search_by_hunt_title(env: Env, query: String) -> Vec<u64> {
         let all_nft_ids = Storage::get_all_nft_ids(&env);
         let mut results = Vec::new(&env);
-        
-        let query_lower = {
-            let mut lower = String::new(&env);
-            for c in query.chars() {
-                lower.push_char(c.to_ascii_lowercase());
-            }
-            lower
-        };
-
         for nft_id in all_nft_ids.iter() {
             if let Some(nft) = Storage::get_nft(&env, nft_id) {
-                let hunt_title_lower = {
-                    let mut lower = String::new(&env);
-                    for c in nft.metadata.hunt_title.chars() {
-                        lower.push_char(c.to_ascii_lowercase());
-                    }
-                    lower
-                };
-                
-                if hunt_title_lower.contains(&query_lower) {
+                if string_contains_ignore_case(&nft.metadata.hunt_title, &query) {
                     results.push_back(nft_id);
                 }
             }
         }
-        
         results
     }
 
@@ -787,51 +858,21 @@ impl NftReward {
         let all_nft_ids = Storage::get_all_nft_ids(&env);
         let mut results = Vec::new(&env);
 
-        let title_lower_opt = title_query.map(|q| {
-            let mut lower = String::new(&env);
-            for c in q.chars() {
-                lower.push_char(c.to_ascii_lowercase());
-            }
-            lower
-        });
-
-        let hunt_title_lower_opt = hunt_title_query.map(|q| {
-            let mut lower = String::new(&env);
-            for c in q.chars() {
-                lower.push_char(c.to_ascii_lowercase());
-            }
-            lower
-        });
-
         for nft_id in all_nft_ids.iter() {
             if let Some(nft) = Storage::get_nft(&env, nft_id) {
                 let mut matches = true;
 
                 // Check title filter
-                if let Some(ref query_lower) = title_lower_opt {
-                    let title_lower = {
-                        let mut lower = String::new(&env);
-                        for c in nft.metadata.title.chars() {
-                            lower.push_char(c.to_ascii_lowercase());
-                        }
-                        lower
-                    };
-                    if !title_lower.contains(query_lower) {
+                if let Some(ref query) = title_query {
+                    if !string_contains_ignore_case(&nft.metadata.title, query) {
                         matches = false;
                     }
                 }
 
                 // Check hunt title filter
                 if matches {
-                    if let Some(ref query_lower) = hunt_title_lower_opt {
-                        let hunt_title_lower = {
-                            let mut lower = String::new(&env);
-                            for c in nft.metadata.hunt_title.chars() {
-                                lower.push_char(c.to_ascii_lowercase());
-                            }
-                            lower
-                        };
-                        if !hunt_title_lower.contains(query_lower) {
+                    if let Some(ref query) = hunt_title_query {
+                        if !string_contains_ignore_case(&nft.metadata.hunt_title, query) {
                             matches = false;
                         }
                     }
@@ -1006,7 +1047,7 @@ impl NftReward {
 
     pub fn initialize_schema(env: Env, admin: Address) {
         admin.require_auth();
-        migration::NftRewardMigration::initialize_schema(&env);
+        migration::NftRewardMigration::initialize_schema(&env, &admin);
     }
 
     pub fn propose_upgrade(
@@ -1219,6 +1260,36 @@ impl NftReward {
 
         Ok(())
     }
+}
+
+fn string_contains_ignore_case(a: &String, b: &String) -> bool {
+    let a_len = a.len() as usize;
+    let b_len = b.len() as usize;
+    if b_len == 0 {
+        return true;
+    }
+    if a_len < b_len {
+        return false;
+    }
+    let mut buf_a = [0u8; 256];
+    let mut buf_b = [0u8; 256];
+    a.copy_into_slice(&mut buf_a[..a_len.min(256)]);
+    b.copy_into_slice(&mut buf_b[..b_len.min(256)]);
+    
+    for i in 0..a_len.min(256) {
+        buf_a[i] = buf_a[i].to_ascii_lowercase();
+    }
+    for i in 0..b_len.min(256) {
+        buf_b[i] = buf_b[i].to_ascii_lowercase();
+    }
+    
+    let limit = a_len.min(256) - b_len.min(256);
+    for idx in 0..=limit {
+        if buf_a[idx..idx + b_len.min(256)] == buf_b[..b_len.min(256)] {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]

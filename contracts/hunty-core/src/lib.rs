@@ -5,7 +5,7 @@ use crate::types::{
     AnswerIncorrectEvent, Clue, ClueAddedEvent, ClueAliasesAddedEvent, ClueCompletedEvent,
     ClueInfo, CreatorBlacklistedEvent, CreatorRemovedFromBlacklistEvent, Hunt, HuntActivatedEvent,
     HuntCancelledEvent, HuntCompletedEvent, HuntCreatedEvent, HuntDeactivatedEvent,
-    HuntStatistics, HuntStatus, LeaderboardEntry, LeaderboardIndexEntry, PlayerProgress,
+    HuntStatusChangedEvent, HuntStatistics, HuntStatus, LeaderboardEntry, LeaderboardIndexEntry, PlayerProgress,
     PlayerRegisteredEvent, RateLimitStatus, RewardClaimFailedEvent, RewardClaimedEvent,
     RewardConfig, RewardManagerSetEvent, TimeBonusConfig,
 };
@@ -22,6 +22,8 @@ const MAX_ANSWER_LENGTH: u32 = 256;
 const MAX_CLUES_PER_HUNT: u32 = 100;
 /// Maximum number of leaderboard entries returned (gas and UX limit).
 const MAX_LEADERBOARD_SIZE: u32 = 20;
+/// Maximum number of player records scanned when building leaderboard responses.
+const MAX_LEADERBOARD_SCAN_SIZE: u32 = 200;
 /// Maximum batch size for paginated list operations (gas protection).
 const MAX_BATCH_SIZE: u32 = 50;
 /// Default page size for paginated queries.
@@ -166,6 +168,7 @@ impl HuntyCore {
             required_clues: 0,
             completed_count: 0,
             max_submissions_per_minute,
+            max_attempts_per_clue: 5,
             start_multiplier_bps: start_multiplier_bps.unwrap_or(20000),
         };
 
@@ -213,6 +216,7 @@ impl HuntyCore {
             start_time,
             end_time,
             template_hunt.max_submissions_per_minute,
+            Some(template_hunt.start_multiplier_bps),
         )?;
 
         let template_clues = Storage::list_clues_for_hunt(&env, template_hunt_id, 0, MAX_CLUES_PER_HUNT);
@@ -348,11 +352,12 @@ impl HuntyCore {
         is_required: bool,
         difficulty: Option<u32>,
     ) -> Result<u32, HuntErrorCode> {
-        let hunt = Storage::get_hunt_or_error(&env, hunt_id).map_err(HuntErrorCode::from)?;
-        if hunt.status != HuntStatus::Draft {
+        // Fast validation using instance cache (cheaper than persistent read)
+        let cache = Self::get_hunt_cache_or_load(&env, hunt_id)?;
+        if cache.status != HuntStatus::Draft {
             return Err(HuntErrorCode::InvalidHuntStatus);
         }
-        hunt.creator.require_auth();
+        cache.creator.require_auth();
         if Storage::get_clue_counter(&env, hunt_id) >= MAX_CLUES_PER_HUNT {
             return Err(HuntErrorCode::from(HuntError::TooManyClues {
                 hunt_id,
@@ -380,7 +385,7 @@ impl HuntyCore {
             difficulty: difficulty.unwrap_or(1),
         };
         Storage::save_clue(&env, hunt_id, &clue);
-        let mut updated = hunt;
+        let mut updated = Storage::get_hunt_or_error(&env, hunt_id).map_err(HuntErrorCode::from)?;
         updated.total_clues += 1;
         if is_required {
             updated.required_clues += 1;
@@ -393,7 +398,7 @@ impl HuntyCore {
             question,
             points,
             is_required,
-            difficulty,
+            difficulty: difficulty.unwrap_or(1),
         };
         env.events()
             .publish((Symbol::new(&env, "ClueAdded"), hunt_id, clue_id), event);
@@ -465,12 +470,9 @@ impl HuntyCore {
         })
     }
 
-    /// Returns all clues for a hunt (question, points, required). Answer hashes are not exposed.
-    /// This loads all clues; for large hunts use `list_clues_paginated` to limit gas cost.
-    /// Estimated gas: O(n) where n = total_clues, ~5_000 gas per clue.
-    pub fn list_clues(env: Env, hunt_id: u64) -> Vec<ClueInfo> {
-        let clue_count = Storage::get_clue_counter(&env, hunt_id);
-        let raw = Storage::list_clues_for_hunt(&env, hunt_id, 0, clue_count);
+    /// Returns paginated clues for a hunt. Answer hashes are not exposed.
+    pub fn list_clues(env: Env, hunt_id: u64, offset: u32, limit: u32) -> Vec<ClueInfo> {
+        let raw = Storage::list_clues_for_hunt(&env, hunt_id, offset, limit.min(MAX_BATCH_SIZE));
         let mut out = Vec::new(&env);
         let limit = core::cmp::min(raw.len(), MAX_BATCH_SIZE);
         for i in 0..limit {
@@ -486,6 +488,21 @@ impl HuntyCore {
         out
     }
 
+    /// Returns a list of all hunts (paginated).
+    pub fn list_hunts(env: Env, offset: u32, limit: u32) -> Vec<Hunt> {
+        let counter = Storage::get_hunt_counter(&env);
+        let actual_limit = limit.min(MAX_BATCH_SIZE).min(counter as u32);
+        let mut hunts = Vec::new(&env);
+        let end = (offset + actual_limit).min(counter as u32);
+        for i in offset..end {
+            let hunt_id = (i as u64) + 1;
+            if let Some(hunt) = Storage::get_hunt(&env, hunt_id) {
+                hunts.push_back(hunt);
+            }
+        }
+        hunts
+    }
+
     /// Returns a paginated slice of clues for a hunt. Useful for large hunts to bound gas.
     /// Page is 0-indexed. Max page_size is capped at MAX_BATCH_SIZE (50).
     /// Estimated gas: O(page_size) ~5_000 gas per clue + 10_000 overhead.
@@ -499,8 +516,8 @@ impl HuntyCore {
         let offset = page.saturating_mul(effective_page_size);
         let raw = Storage::list_clues_for_hunt(&env, hunt_id, offset, effective_page_size);
         let mut out = Vec::new(&env);
-        for i in start..end {
-            if let Some(c) = raw.get(i as u32) {
+        for i in 0..raw.len() {
+            if let Some(c) = raw.get(i) {
                 out.push_back(ClueInfo {
                     clue_id: c.clue_id,
                     question: c.question,
@@ -564,38 +581,48 @@ impl HuntyCore {
         b.is_ascii_whitespace()
     }
 
-    fn require_admin(env: &Env, admin: &Address) -> Result<(), HuntErrorCode> {
-        admin.require_auth();
-        let stored_admin = Storage::get_admin(env).ok_or(HuntErrorCode::Unauthorized)?;
-        if stored_admin != admin.clone() {
-            return Err(HuntErrorCode::Unauthorized);
-        }
-        Ok(())
-    }
+
 
     fn validate_rarity(v: u32) -> bool {
         v <= 5
     }
 
+    fn emit_hunt_status_changed(
+        env: &Env,
+        hunt_id: u64,
+        old_status: HuntStatus,
+        new_status: HuntStatus,
+        changed_at: u64,
+    ) {
+        let event = HuntStatusChangedEvent {
+            hunt_id,
+            old_status,
+            new_status,
+            changed_at,
+        };
+        env.events().publish(
+            (Symbol::new(env, "HuntStatusChanged"), hunt_id),
+            event,
+        );
+    }
+
     pub fn activate_hunt(env: Env, hunt_id: u64, caller: Address) -> Result<(), HuntErrorCode> {
-        let mut hunt = Storage::get_hunt(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
-
-        // Verify caller is the creator
-
-        if caller != hunt.creator {
+        // Fast validation using instance cache
+        let cache = Self::get_hunt_cache_or_load(&env, hunt_id)?;
+        if caller != cache.creator {
             return Err(HuntErrorCode::Unauthorized);
         }
-
-        if hunt.status != HuntStatus::Draft {
+        if cache.status != HuntStatus::Draft {
             return Err(HuntErrorCode::InvalidHuntStatus);
         }
-
-        if hunt.total_clues == 0 {
+        if cache.total_clues == 0 {
             return Err(HuntErrorCode::NoCluesAdded);
         }
-
-        if hunt.required_clues == 0 {
+        if cache.required_clues == 0 {
             return Err(HuntErrorCode::NoRequiredClues);
+        }
+        if Storage::get_reward_manager(&env).is_some() && cache.max_winners == 0 {
+            return Err(HuntErrorCode::NoRewardsConfigured);
         }
 
         // Check rewards are configured if reward manager is set
@@ -653,21 +680,20 @@ impl HuntyCore {
 
         Ok(())
     }
+    Storage::set_admin(&env, &admin);
 
     pub fn deactivate_hunt(env: Env, hunt_id: u64, caller: Address) -> Result<(), HuntErrorCode> {
-        // Load hunt
-        let mut hunt = Storage::get_hunt(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
-
-        // Verify caller is creator
-        if caller != hunt.creator {
+        // Fast validation using instance cache
+        let cache = Self::get_hunt_cache_or_load(&env, hunt_id)?;
+        if caller != cache.creator {
             return Err(HuntErrorCode::Unauthorized);
         }
-
-        // Check hunt is Active
-        if hunt.status != HuntStatus::Active {
+        if cache.status != HuntStatus::Active {
             return Err(HuntErrorCode::InvalidHuntStatus);
         }
 
+        // Validation passed — load full hunt from persistent for mutation
+        let mut hunt = Storage::get_hunt(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
         hunt.status = HuntStatus::Draft;
 
         Storage::save_hunt(&env, &hunt);
@@ -693,22 +719,24 @@ impl HuntyCore {
 
         // Load hunt
         let mut hunt = Storage::get_hunt(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
-        let old_status = hunt.status;
+        let old_status = hunt.status.clone();
 
-        // Verify caller is creator
-        if caller != hunt.creator {
+        // Fast validation using instance cache
+        let cache = Self::get_hunt_cache_or_load(&env, hunt_id)?;
+        if caller != cache.creator {
             return Err(HuntErrorCode::Unauthorized);
         }
-
-        // Cannot cancel a completed hunt
-        if hunt.status == HuntStatus::Completed {
+        if cache.status == HuntStatus::Completed {
+            return Err(HuntErrorCode::InvalidHuntStatus);
+        }
+        if cache.status == HuntStatus::Cancelled {
             return Err(HuntErrorCode::InvalidHuntStatus);
         }
 
-        // If already cancelled, treat as invalid
-        if hunt.status == HuntStatus::Cancelled {
-            return Err(HuntErrorCode::InvalidHuntStatus);
-        }
+        let old_status = cache.status;
+
+        // Load full hunt from persistent for mutation
+        let mut hunt = Storage::get_hunt(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
 
         // Handle refunds for any remaining funded reward pool balance.
         if let Some(reward_manager_addr) = Storage::get_reward_manager(&env) {
@@ -769,7 +797,8 @@ impl HuntyCore {
             | HuntStatus::Active
             | HuntStatus::Completed
             | HuntStatus::Cancelled
-            | HuntStatus::Paused => {}
+            | HuntStatus::Paused
+            | HuntStatus::EmergencyStopped => {}
         }
 
         // Return the full Hunt struct
@@ -884,14 +913,13 @@ impl HuntyCore {
             return Err(HuntErrorCode::RewardAlreadyClaimed);
         }
 
-        // Check rewards are configured
-        if hunt.reward_config.max_winners == 0 {
-            return Err(HuntErrorCode::NoRewardsConfigured);
-        }
+        // Example migration logic - extend this for future schema changes
+        let mut steps = 0u32;
 
-        // Check reward slots are available
-        if !hunt.has_rewards_available() {
-            return Err(HuntErrorCode::InsufficientRewardPool);
+        if current < 2 && target_version >= 2 {
+            // Example: Migrate old player progress structure
+            Self::migrate_v1_to_v2(&env, dry_run)?;
+            steps += 1;
         }
 
         let reward_amount = hunt.reward_config.reward_per_winner();
@@ -951,9 +979,9 @@ impl HuntyCore {
             // Only call RewardManager when there is at least one reward type
             if rm_reward_config.is_valid() {
                 let mut args: Vec<Val> = Vec::new(&env);
-                args.push_back(hunt_id.into_val(env));
-                args.push_back(player.clone().into_val(env));
-                args.push_back(rm_reward_config.into_val(env));
+                args.push_back(hunt_id.into_val(&env));
+                args.push_back(player.clone().into_val(&env));
+                args.push_back(rm_reward_config.into_val(&env));
 
                 let result = env.try_invoke_contract::<(), RewardErrorCode>(
                     &reward_manager_addr,
@@ -1019,8 +1047,12 @@ impl HuntyCore {
         }
 
         let current_time = env.ledger().timestamp();
-        if !hunt.is_active(current_time) {
-            return Err(HuntErrorCode::HuntNotActive);
+
+        // Cache read: cheaper than loading full Hunt from persistent storage
+        let _cache = Self::validate_hunt_active_cached(&env, hunt_id)?;
+
+        if Storage::get_player_progress(&env, hunt_id, &player).is_some() {
+            return Err(HuntErrorCode::DuplicateRegistration);
         }
 
         if Storage::get_player_progress(&env, hunt_id, &player).is_some() {
@@ -1145,8 +1177,12 @@ impl HuntyCore {
         let hunt = Storage::get_hunt(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
 
         let current_time = env.ledger().timestamp();
-        if !hunt.is_active(current_time) {
-            return Err(HuntErrorCode::HuntNotActive);
+
+        // Fast validation using instance cache (cheaper than persistent read)
+        let cache = Self::validate_hunt_active_cached(&env, hunt_id)?;
+
+        if Storage::is_banned(&env, hunt_id, &player) {
+            return Err(HuntErrorCode::BannedPlayer);
         }
 
         if Storage::is_banned(&env, hunt_id, &player) {
@@ -1366,7 +1402,7 @@ impl HuntyCore {
             }
         }
 
-        if answer_hash != clue.answer_hash {
+        if clue.answer_hashes.first_index_of(answer_hash.clone()).is_none() {
             if hunt.max_submissions_per_minute > 0 {
                 progress.recent_submissions.push_back(current_time);
                 Storage::save_player_progress(&env, &progress);
@@ -1515,21 +1551,40 @@ impl HuntyCore {
         let clue_count = Storage::get_clue_counter(env, hunt_id);
         let all_clues = Storage::list_clues_for_hunt(env, hunt_id, 0, clue_count);
 
-        // Iterate through all clues and check if all required ones are completed
-        for i in 0..all_clues.len() {
-            let clue = all_clues.get(i).unwrap();
+        if hunt.required_clues == 0 {
+            return true;
+        }
 
-            // If this is a required clue
-            if clue.is_required {
-                // Check if player has completed it
-                if !progress.has_completed_clue(clue.clue_id) {
-                    // Found a required clue that's not completed
+        // Quick early exit: player hasn't completed enough clues total
+        if progress.completed_clues.len() < hunt.required_clues as u32 {
+            return false;
+        }
+
+        // Load only the required clue IDs (much cheaper than loading full clues)
+        let required_ids = Storage::get_required_clues(env, hunt_id);
+
+        // If the list is empty but hunt has required clues, fall back to scanning
+        // all clues (backward compatibility for pre-migration hunts)
+        if required_ids.is_empty() {
+            let clue_count = Storage::get_clue_counter(env, hunt_id);
+            let all_clues = Storage::list_clues_for_hunt(env, hunt_id, 0, clue_count);
+            for i in 0..all_clues.len() {
+                let clue = all_clues.get(i).unwrap();
+                if clue.is_required && !progress.has_completed_clue(clue.clue_id) {
                     return false;
                 }
             }
+            return true;
         }
 
-        // All required clues are completed
+        // Fast path: check only the required clue IDs
+        for i in 0..required_ids.len() {
+            let cid = required_ids.get(i).unwrap();
+            if !progress.has_completed_clue(cid) {
+                return false;
+            }
+        }
+
         true
     }
 
@@ -1567,7 +1622,8 @@ impl HuntyCore {
         hunt_id: u64,
         limit: u32,
     ) -> Result<Vec<LeaderboardEntry>, HuntErrorCode> {
-        let _ = Storage::get_hunt(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
+        // Cache existence check (cheaper than loading full Hunt)
+        Storage::get_hunt_cache(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
         let effective_limit = core::cmp::min(limit, MAX_LEADERBOARD_SIZE);
         let entries = Storage::get_leaderboard_index(&env, hunt_id);
         let mut result = Vec::new(&env);
@@ -1831,19 +1887,7 @@ pub fn get_view_only_list(env: Env, hunt_id: u64) -> Vec<Address> {
     Storage::get_view_only_list(&env, hunt_id)
 }
 
-pub fn initialize_admin(
-    env: Env,
-    admin: Address,
-) -> Result<(), HuntErrorCode> {
-    admin.require_auth();
 
-    if Storage::get_admin(&env).is_some() {
-        return Err(HuntErrorCode::Unauthorized);
-    }
-
-    Storage::set_admin(&env, &admin);
-    Ok(())
-}
 
 /// Step one of a two-step admin key rotation.
 ///
@@ -2094,6 +2138,7 @@ pub fn get_health_dashboard(env: Env) -> monitoring::ContractHealth {
             }
         }
     }
+}
 
 mod admin;
 mod errors;
