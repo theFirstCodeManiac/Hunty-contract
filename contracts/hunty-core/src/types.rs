@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, BytesN, Env, String, Vec};
+use soroban_sdk::{contracttype, Address, BytesN, Env, Map, String, Vec};
 
 /// Semantic version (major.minor.patch). Compatible if major matches and self >= required.
 #[contracttype]
@@ -61,6 +61,8 @@ pub struct Hunt {
     pub completed_count: u32,
     pub max_submissions_per_minute: u32,
     pub start_multiplier_bps: u32,
+    /// 0 means unlimited
+    pub max_attempts_per_clue: u32,
 }
 
 /// Compact cache of frequently-accessed hunt fields stored in instance storage.
@@ -200,6 +202,8 @@ pub struct StoredPlayerProgress {
     /// Packed boolean flags: bit 0 = is_completed, bit 1 = reward_claimed
     pub flags: u8,
     pub recent_submissions: Vec<u64>,
+    /// Maps clue_id → number of failed attempts
+    pub failed_attempts: Map<u32, u32>,
 }
 
 /// Public view of player progress, with `player` and `hunt_id` reconstructed from the key.
@@ -215,6 +219,8 @@ pub struct PlayerProgress {
     pub is_completed: bool,
     pub reward_claimed: bool,
     pub recent_submissions: Vec<u64>,
+    /// Maps clue_id → number of failed attempts
+    pub failed_attempts: Map<u32, u32>,
 }
 
 impl PlayerProgress {
@@ -229,6 +235,7 @@ impl PlayerProgress {
             is_completed: false,
             reward_claimed: false,
             recent_submissions: Vec::new(env),
+            failed_attempts: Map::new(env),
         }
     }
 
@@ -263,6 +270,7 @@ impl PlayerProgress {
             completed_at: self.completed_at,
             flags: Self::bools_to_flags(self.is_completed, self.reward_claimed),
             recent_submissions: self.recent_submissions.clone(),
+            failed_attempts: self.failed_attempts.clone(),
         }
     }
 
@@ -278,6 +286,7 @@ impl PlayerProgress {
             is_completed: Self::flags_to_is_completed(stored.flags),
             reward_claimed: Self::flags_to_reward_claimed(stored.flags),
             recent_submissions: stored.recent_submissions,
+            failed_attempts: stored.failed_attempts,
         }
     }
 
