@@ -669,29 +669,16 @@ impl HuntyCore {
 
         Ok(())
     }
+    Storage::set_admin(&env, &admin);
 
-    pub fn deactivate_hunt(env: Env, hunt_id: u64, caller: Address) -> Result<(), HuntErrorCode> {
-        // Load hunt
-        let mut hunt = Storage::get_hunt(&env, hunt_id).ok_or(HuntErrorCode::HuntNotFound)?;
+    // NEW: Initialize schema version
+    MigrationFramework::init_version_on_deploy(&env);
+    UpgradeAuthorization::set_upgrade_admin(&env, &admin);
 
-        // Verify caller is creator
-        if caller != hunt.creator {
-            return Err(HuntErrorCode::Unauthorized);
-        }
+    Ok(())
+}
 
-        // Check hunt is Active
-        if hunt.status != HuntStatus::Active {
-            return Err(HuntErrorCode::InvalidHuntStatus);
-        }
-
-        hunt.status = HuntStatus::Draft;
-
-        Storage::save_hunt(&env, &hunt);
-
-        let event = HuntDeactivatedEvent { hunt_id };
-
-        env.events()
-            .publish((Symbol::new(&env, "HuntDeactivated"), hunt_id), event);
+// Add these public migration methods (near the end of the contractimpl):
 
         Self::emit_hunt_status_changed(
             &env,
@@ -900,14 +887,13 @@ impl HuntyCore {
             return Err(HuntErrorCode::RewardAlreadyClaimed);
         }
 
-        // Check rewards are configured
-        if hunt.reward_config.max_winners == 0 {
-            return Err(HuntErrorCode::NoRewardsConfigured);
-        }
+        // Example migration logic - extend this for future schema changes
+        let mut steps = 0u32;
 
-        // Check reward slots are available
-        if !hunt.has_rewards_available() {
-            return Err(HuntErrorCode::InsufficientRewardPool);
+        if current < 2 && target_version >= 2 {
+            // Example: Migrate old player progress structure
+            Self::migrate_v1_to_v2(&env, dry_run)?;
+            steps += 1;
         }
 
         let reward_amount = hunt.reward_config.reward_per_winner();
@@ -1042,17 +1028,10 @@ impl HuntyCore {
         if Storage::get_player_progress(&env, hunt_id, &player).is_some() {
             return Err(HuntErrorCode::DuplicateRegistration);
         }
-
-        let progress = PlayerProgress::new(&env, player.clone(), hunt_id, current_time);
-        Storage::save_player_progress(&env, &progress);
-
-        let event = PlayerRegisteredEvent {
-            hunt_id,
-            player: player.clone(),
-        };
-        env.events()
-            .publish((Symbol::new(&env, "PlayerRegistered"), hunt_id), event);
-
+        // Add data transformation logic here, e.g.:
+        // - Update existing Hunt structs
+        // - Re-key old storage entries
+        // - Add new fields with defaults
         Ok(())
     }
 

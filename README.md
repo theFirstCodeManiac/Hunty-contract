@@ -45,7 +45,7 @@ graph TB
     HuntyCore -->|Hunt Completed| RewardManager[RewardManager Contract]
     RewardManager -->|Distributes XLM| Player
     RewardManager -->|Mints NFT| NftReward[NftReward Contract]
-    NftReward -->|Transfers NFT| Player
+    NftReward -->|Transfers NFT| Player.
     
     style HuntyCore fill:#4a90e2
     style RewardManager fill:#50c878
