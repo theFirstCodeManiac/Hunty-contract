@@ -5,6 +5,14 @@ pub use reward_interface::{
     TimeBasedRewardTier,
 };
 
+/// Outcome of a manually resolved distribution.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ResolutionStatus {
+    Completed,
+    Refunded,
+}
+
 /// Status of a reward distribution for a specific hunt and player.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq)]
