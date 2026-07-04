@@ -73,6 +73,18 @@ pub struct Clue {
     pub difficulty: u8,
 }
 
+/// Input payload for adding multiple clues in one contract invocation.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BatchClueInput {
+    pub question: String,
+    pub answer: String,
+    pub points: u32,
+    pub is_required: bool,
+    /// Difficulty multiplier (1-10). Points earned = points * difficulty.
+    pub difficulty: u8,
+}
+
 /// Clue info returned by get_clue/list_clues. Excludes answer hash.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq)]

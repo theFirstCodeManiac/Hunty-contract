@@ -54,6 +54,15 @@ export interface ClueInfo {
   question: string;
   points: number;
   is_required: boolean;
+  difficulty: number;
+}
+
+export interface BatchClueInput {
+  question: string;
+  answer: string;
+  points: number;
+  is_required: boolean;
+  difficulty: number;
 }
 
 export interface PlayerProgress {
@@ -111,14 +120,26 @@ export class Client extends ContractClient {
     answer,
     points,
     is_required,
+    difficulty = 1,
   }: {
     hunt_id: bigint;
     question: string;
     answer: string;
     points: number;
     is_required: boolean;
+    difficulty?: number;
   }): Promise<AssembledTransaction<number>> {
-    return this.call("add_clue", hunt_id, question, answer, points, is_required);
+    return this.call("add_clue", hunt_id, question, answer, points, is_required, difficulty);
+  }
+
+  async add_clues({
+    hunt_id,
+    clues,
+  }: {
+    hunt_id: bigint;
+    clues: BatchClueInput[];
+  }): Promise<AssembledTransaction<number[]>> {
+    return this.call("add_clues", hunt_id, clues);
   }
 
   async get_clue({

@@ -24,7 +24,7 @@ mod test {
     // Bring Soroban testutils traits into scope (generate addresses, set ledger info, register contracts).
     use crate::errors::{HuntError, HuntErrorCode};
     use crate::storage::Storage;
-    use crate::types::{HuntStatus, TimeBonusConfig};
+    use crate::types::{BatchClueInput, HuntStatus, TimeBonusConfig};
     use crate::HuntyCore;
     use nft_reward::{NftMetadata, NftReward};
     use reward_manager::RewardManager;
@@ -824,6 +824,167 @@ mod test {
         assert_eq!(info.question, question);
         assert_eq!(info.points, 10);
         assert!(info.is_required);
+    }
+
+    #[test]
+    fn test_add_clues_success() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_700_000_000);
+        env.mock_all_auths();
+        let creator = Address::generate(&env);
+
+        let (ids, hunt, clues) = with_core_contract(&env, |env, _cid| {
+            let hunt_id = HuntyCore::create_hunt(
+                env.clone(),
+                creator.clone(),
+                String::from_str(env, "Batch Hunt"),
+                String::from_str(env, "Description"),
+                None,
+                None,
+            )
+            .unwrap();
+            let clues = Vec::from_array(
+                env,
+                [
+                    BatchClueInput {
+                        question: String::from_str(env, "Q1"),
+                        answer: String::from_str(env, "a1"),
+                        points: 10,
+                        is_required: true,
+                        difficulty: 1,
+                    },
+                    BatchClueInput {
+                        question: String::from_str(env, "Q2"),
+                        answer: String::from_str(env, "a2"),
+                        points: 20,
+                        is_required: false,
+                        difficulty: 3,
+                    },
+                ],
+            );
+
+            let ids = HuntyCore::add_clues(env.clone(), hunt_id, clues).unwrap();
+            let hunt = Storage::get_hunt(env, hunt_id).unwrap();
+            let stored = HuntyCore::list_clues(env.clone(), hunt_id, 0, 10);
+            (ids, hunt, stored)
+        });
+
+        assert_eq!(ids.len(), 2);
+        assert_eq!(ids.get(0).unwrap(), 1);
+        assert_eq!(ids.get(1).unwrap(), 2);
+        assert_eq!(hunt.total_clues, 2);
+        assert_eq!(hunt.required_clues, 1);
+        assert_eq!(clues.len(), 2);
+        assert_eq!(clues.get(0).unwrap().points, 10);
+        assert_eq!(clues.get(1).unwrap().difficulty, 3);
+    }
+
+    #[test]
+    fn test_add_clues_rejects_batch_over_clue_limit() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_700_000_000);
+        env.mock_all_auths();
+        let creator = Address::generate(&env);
+
+        let clue_count = with_core_contract(&env, |env, _cid| {
+            let hunt_id = HuntyCore::create_hunt(
+                env.clone(),
+                creator.clone(),
+                String::from_str(env, "Batch Hunt"),
+                String::from_str(env, "Description"),
+                None,
+                None,
+            )
+            .unwrap();
+
+            for _ in 0..99 {
+                HuntyCore::add_clue(
+                    env.clone(),
+                    hunt_id,
+                    String::from_str(env, "Q"),
+                    String::from_str(env, "a"),
+                    1,
+                    false,
+                    1,
+                )
+                .unwrap();
+            }
+
+            let clues = Vec::from_array(
+                env,
+                [
+                    BatchClueInput {
+                        question: String::from_str(env, "Q100"),
+                        answer: String::from_str(env, "a100"),
+                        points: 1,
+                        is_required: false,
+                        difficulty: 1,
+                    },
+                    BatchClueInput {
+                        question: String::from_str(env, "Q101"),
+                        answer: String::from_str(env, "a101"),
+                        points: 1,
+                        is_required: false,
+                        difficulty: 1,
+                    },
+                ],
+            );
+
+            let err = HuntyCore::add_clues(env.clone(), hunt_id, clues).unwrap_err();
+            assert_eq!(err, HuntErrorCode::TooManyClues);
+            Storage::get_clue_counter(env, hunt_id)
+        });
+
+        assert_eq!(clue_count, 99);
+    }
+
+    #[test]
+    fn test_add_clues_invalid_hunt_status_not_draft() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_700_000_000);
+        env.mock_all_auths();
+        let creator = Address::generate(&env);
+
+        with_core_contract(&env, |env, _cid| {
+            let hunt_id = HuntyCore::create_hunt(
+                env.clone(),
+                creator.clone(),
+                String::from_str(env, "Batch Hunt"),
+                String::from_str(env, "Description"),
+                None,
+                None,
+            )
+            .unwrap();
+            HuntyCore::add_clue(
+                env.clone(),
+                hunt_id,
+                String::from_str(env, "Required"),
+                String::from_str(env, "a"),
+                1,
+                true,
+                1,
+            )
+            .unwrap();
+            let mut hunt = Storage::get_hunt(env, hunt_id).unwrap();
+            hunt.reward_config =
+                crate::types::HuntRewardConfig::new(env, 100, false, None, 1, 0, 0);
+            Storage::save_hunt(env, &hunt);
+            HuntyCore::activate_hunt(env.clone(), hunt_id, creator.clone()).unwrap();
+
+            let clues = Vec::from_array(
+                env,
+                [BatchClueInput {
+                    question: String::from_str(env, "Q2"),
+                    answer: String::from_str(env, "a2"),
+                    points: 1,
+                    is_required: false,
+                    difficulty: 1,
+                }],
+            );
+
+            let err = HuntyCore::add_clues(env.clone(), hunt_id, clues).unwrap_err();
+            assert_eq!(err, HuntErrorCode::InvalidHuntStatus);
+        });
     }
 
     #[test]
