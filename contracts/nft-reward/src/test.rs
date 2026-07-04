@@ -219,8 +219,6 @@ fn test_nft_minted_event() {
     assert_eq!(event.owner, player);
     assert_eq!(event.rarity, 4);
     assert_eq!(event.tier, 2);
-    assert_eq!(event.metadata.rarity, 4);
-    assert_eq!(event.metadata.tier, 2);
     assert_eq!(event.minted_at, 1000);
 }
 
