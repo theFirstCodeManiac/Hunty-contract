@@ -17,6 +17,8 @@ use std::string::ToString;
 
 #[cfg(test)]
 mod test {
+    // Benchmark-style micro tests (best-effort gas/footprint proxy)
+
     use super::*;
     use soroban_sdk::{Address, Env, String, Symbol, TryIntoVal, Vec};
     // Bring Soroban testutils traits into scope (generate addresses, set ledger info, register contracts).
@@ -4579,12 +4581,21 @@ mod test {
         let (hunt_id, contract_id) =
             setup_completed_hunt_with_rewards(&env, &creator, &player, 5, 1000);
 
-#[test]
-fn test_get_hunt_statistics_mixed_completion_states() {
-    let env = Env::default();
-    env.ledger().set_timestamp(1_700_000_000);
+        // Try to complete the hunt — should fail with InvalidHuntStatus
+        env.mock_all_auths();
+        let result = as_core_contract(&env, &contract_id, |env| {
+            HuntyCore::complete_hunt(env.clone(), hunt_id, player.clone())
+        });
+        assert_eq!(result, Err(HuntErrorCode::InvalidHuntStatus));
+    }
 
-    let creator = Address::generate(&env);
+    #[test]
+    fn test_get_hunt_statistics_mixed_completion_states() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_700_000_000);
+
+        let creator = Address::generate(&env);
+
     let player1 = Address::generate(&env);
     let player2 = Address::generate(&env);
     let player3 = Address::generate(&env);
@@ -4699,5 +4710,57 @@ fn test_get_hunt_statistics_mixed_completion_states() {
         let config = crate::types::RewardConfig::new(7, false, None, 3, 0, 0);
         let amount = config.reward_per_winner();
         assert_eq!(amount, 2, "xlm_pool=7 / max_winners=3 must round down to 2");
+    }
+
+    #[test]
+    fn test_compact_storage_roundtrip() {
+        let env = Env::default();
+        let player = Address::generate(&env);
+        let hunt_id = 42u64;
+        let activated_at = 1_700_000_000u64;
+        let started_at = 1_700_000_600u64; // 10 minutes delta
+        let completed_at = 1_700_003_600u64; // 50 minutes delta from started_at
+
+        // Recreate PlayerProgress structure
+        let mut progress = crate::types::PlayerProgress::new(&env, player.clone(), hunt_id, started_at);
+        progress.is_completed = true;
+        progress.reward_claimed = true;
+        progress.completed_at = completed_at;
+        progress.total_score = 1000;
+        progress.required_completed_count = 5;
+
+        // Record some clues and attempts
+        progress.completed_clues.push_back(1);
+        progress.completed_clues.push_back(2);
+        progress.clue_attempts.set(1, 3);
+        progress.clue_attempts.set(2, 1);
+
+        // Convert to compact stored form
+        let stored = progress.to_stored(activated_at);
+
+        // Verify stored compact values
+        assert_eq!(stored.started_at_delta, 600);
+        assert_eq!(stored.completed_at_delta, 3000);
+        assert_eq!(stored.flags, 0b0000_0011);
+        assert_eq!(stored.total_score, 1000);
+        assert_eq!(stored.required_completed_count, 5);
+
+        // Reconstruct from stored
+        let restored = crate::types::PlayerProgress::from_stored(&env, stored, player.clone(), hunt_id, activated_at);
+
+        // Verify restored matches original
+        assert_eq!(restored.player, player);
+        assert_eq!(restored.hunt_id, hunt_id);
+        assert_eq!(restored.started_at, started_at);
+        assert_eq!(restored.completed_at, completed_at);
+        assert_eq!(restored.is_completed, true);
+        assert_eq!(restored.reward_claimed, true);
+        assert_eq!(restored.total_score, 1000);
+        assert_eq!(restored.required_completed_count, 5);
+        assert_eq!(restored.completed_clues.len(), 2);
+        assert_eq!(restored.completed_clues.get(0).unwrap(), 1);
+        assert_eq!(restored.completed_clues.get(1).unwrap(), 2);
+        assert_eq!(restored.clue_attempts.get(1).unwrap(), 3);
+        assert_eq!(restored.clue_attempts.get(2).unwrap(), 1);
     }
 }
