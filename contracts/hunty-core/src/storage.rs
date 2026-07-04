@@ -88,7 +88,10 @@ impl Storage {
 
     pub fn save_player_progress(env: &Env, progress: &PlayerProgress) {
         let key = Self::progress_key(progress.hunt_id, &progress.player);
-        env.storage().persistent().set(&key, &progress.to_stored());
+        let activated_at = Self::get_hunt(env, progress.hunt_id)
+            .map(|h| h.activated_at)
+            .unwrap_or(0);
+        env.storage().persistent().set(&key, &progress.to_stored(activated_at));
         env.storage()
             .persistent()
             .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
@@ -101,11 +104,14 @@ impl Storage {
         player: &Address,
     ) -> Option<PlayerProgress> {
         let key = Self::progress_key(hunt_id, player);
-        let result = env
+        let activated_at = Self::get_hunt(env, hunt_id)
+            .map(|h| h.activated_at)
+            .unwrap_or(0);
+        env
             .storage()
             .persistent()
             .get::<_, StoredPlayerProgress>(&key)
-            .map(|stored| PlayerProgress::from_stored(env, stored, player.clone(), hunt_id))
+            .map(|stored| PlayerProgress::from_stored(env, stored, player.clone(), hunt_id, activated_at))
     }
 
     pub fn get_player_progress_or_error(
