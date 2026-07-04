@@ -23,4 +23,6 @@ pub enum RewardErrorCode {
     AlreadyInitialized = 12,
     /// hunt_id does not exist in HuntyCore (validated via cross-contract call).
     HuntNotFound = 13,
+    /// Distribution record not found for this hunt/player pair.
+    DistributionNotFound = 24,
 }
