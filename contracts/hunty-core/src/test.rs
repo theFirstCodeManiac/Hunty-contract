@@ -2318,11 +2318,35 @@ mod test {
     #[test]
     fn test_cancel_hunt_not_found() {
         let env = Env::default();
+        env.mock_all_auths();
         let creator = Address::generate(&env);
 
         with_core_contract(&env, |env, _cid| {
             let err = HuntyCore::cancel_hunt(env.clone(), 999, creator.clone()).unwrap_err();
             assert_eq!(err, HuntErrorCode::HuntNotFound);
+        });
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_cancel_hunt_requires_creator_auth() {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_700_000_000);
+
+        let creator = Address::generate(&env);
+
+        with_core_contract(&env, |env, _cid| {
+            let hunt_id = HuntyCore::create_hunt(
+                env.clone(),
+                creator.clone(),
+                String::from_str(env, "Test Hunt"),
+                String::from_str(env, "Test description"),
+                None,
+                None,
+            )
+            .unwrap();
+
+            HuntyCore::cancel_hunt(env.clone(), hunt_id, creator.clone()).unwrap();
         });
     }
 
