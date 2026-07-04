@@ -1,26 +1,26 @@
-use soroban_sdk::{contracttype, Address, String};
+use soroban_sdk::{contracttype, Address, Vec};
 
-/// Configuration for distributing rewards. Uses only primitive/Option types for reliable contracttype.
-/// At least one of xlm_amount or nft_contract must be set for a valid distribution.
+pub use reward_interface::{
+    resolve_tier_amount, tiers_are_strictly_ascending, RewardConfig, TierError,
+    TimeBasedRewardTier,
+};
+
+/// Semantic versioning struct.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RewardConfig {
-    /// XLM amount to distribute. None if no XLM rewards.
-    pub xlm_amount: Option<i128>,
-    /// NFT contract address. None if no NFT rewards.
-    pub nft_contract: Option<Address>,
-    /// NFT title. Used when nft_contract is Some.
-    pub nft_title: String,
-    /// NFT description. Used when nft_contract is Some.
-    pub nft_description: String,
-    /// NFT image URI. Used when nft_contract is Some.
-    pub nft_image_uri: String,
-    /// Hunt title (for metadata context). Defaults to nft_title when same.
-    pub nft_hunt_title: String,
-    /// Rarity tier: 0 = default, 1-5 = common to legendary.
-    pub nft_rarity: u32,
-    /// Custom tier (0 = none).
-    pub nft_tier: u32,
+pub struct SemVer {
+    pub major: u32,
+    pub minor: u32,
+    pub patch: u32,
+}
+
+impl SemVer {
+    /// Returns true if the other version is compatible (same major, minor >= required).
+    pub fn is_compatible_with(&self, required: &Self) -> bool {
+        self.major == required.major
+            && (self.minor > required.minor
+                || (self.minor == required.minor && self.patch >= required.patch))
+    }
 }
 
 /// Status of a reward distribution for a specific hunt and player.
@@ -33,6 +33,8 @@ pub struct DistributionStatus {
     pub xlm_amount: i128,
     /// NFT ID if an NFT was minted.
     pub nft_id: Option<u64>,
+    /// Whether NFT minting failed during distribution (retry available).
+    pub nft_mint_failed: bool,
 }
 
 /// Internal record stored for each distribution.
@@ -44,6 +46,15 @@ pub struct DistributionRecord {
 }
 
 /// Configuration for a reward pool, set at creation time.
+///
+/// `time_based_tiers` is an optional list of (max_elapsed_seconds, xlm_amount)
+/// pairs that define a conditional reward schedule based on how quickly a
+/// player completes a hunt. When the list is empty, time-based conditional
+/// rewards are disabled and the rest of the system behaves exactly as
+/// before this feature was added. When the list is non-empty it must be
+/// sorted in strictly ascending order of `max_completion_secs` (validated
+/// in `set_pool_tiers`). The list can be updated after pool creation via
+/// `set_pool_tiers` and queried via `get_pool_config`.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RewardPoolConfig {
@@ -52,6 +63,11 @@ pub struct RewardPoolConfig {
     pub creator: Address,
     /// Minimum XLM amount per distribution. 0 means no minimum enforced.
     pub min_distribution_amount: i128,
+    /// Optional time-based reward tiers. When empty, the per-winner amount
+    /// is computed from `xlm_pool / max_winners` as before. When populated,
+    /// the appropriate tier's `xlm_amount` is selected at distribution time
+    /// based on the player's (completion_time - registration_time) elapsed.
+    pub time_based_tiers: Vec<TimeBasedRewardTier>,
 }
 
 /// Full status of a reward pool, returned by get_reward_pool().
@@ -70,6 +86,21 @@ pub struct RewardPoolStatus {
     pub min_distribution_amount: i128,
 }
 
+/// Pending NFT mint that failed and can be retried by the admin.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingNftMint {
+    pub hunt_id: u64,
+    pub player: Address,
+    pub nft_contract: Address,
+    pub nft_title: soroban_sdk::String,
+    pub nft_description: soroban_sdk::String,
+    pub nft_image_uri: soroban_sdk::String,
+    pub nft_hunt_title: soroban_sdk::String,
+    pub nft_rarity: u32,
+    pub nft_tier: u32,
+}
+
 /// Result of a pool validation check, returned by validate_pool().
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -83,19 +114,26 @@ pub struct ValidationResult {
     pub required: i128,
 }
 
-impl RewardConfig {
-    /// Returns true if XLM rewards are configured.
-    pub fn has_xlm(&self) -> bool {
-        self.xlm_amount.map(|a| a > 0).unwrap_or(false)
-    }
+/// Operation type for the pool audit log.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PoolOperation {
+    Create,
+    Fund,
+    Distribute,
+    Withdraw,
+}
 
-    /// Returns true if NFT rewards are configured.
-    pub fn has_nft(&self) -> bool {
-        self.nft_contract.is_some()
-    }
-
-    /// Returns true if at least one reward type is configured.
-    pub fn is_valid(&self) -> bool {
-        self.has_xlm() || self.has_nft()
-    }
+/// A single entry in the pool audit log.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PoolAuditEntry {
+    /// Who triggered the operation.
+    pub actor: Address,
+    /// Operation performed.
+    pub operation: PoolOperation,
+    /// Timestamp (ledger time).
+    pub timestamp: u64,
+    /// The XLM amount involved, if applicable.
+    pub amount: Option<i128>,
 }
