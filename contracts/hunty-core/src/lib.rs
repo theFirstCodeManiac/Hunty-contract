@@ -181,7 +181,6 @@ impl HuntyCore {
         let event = HuntCreatedEvent {
             hunt_id,
             creator: creator.clone(),
-            title: title.clone(),
         };
         env.events()
             .publish((Symbol::new(&env, "HuntCreated"), hunt_id), event);
@@ -333,7 +332,7 @@ impl HuntyCore {
             creator: updated.creator.clone(),
             points,
             is_required,
-            public_question: false,
+            difficulty,
         };
         env.events()
             .publish((Symbol::new(&env, "ClueAdded"), hunt_id, clue_id), event);

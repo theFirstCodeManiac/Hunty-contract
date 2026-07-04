@@ -408,7 +408,6 @@ impl TimeBonusConfig {
 pub struct HuntCreatedEvent {
     pub hunt_id: u64,
     pub creator: Address,
-    pub title: String,
 }
 
 #[contracttype]
