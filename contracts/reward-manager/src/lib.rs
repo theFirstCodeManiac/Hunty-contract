@@ -30,7 +30,6 @@ pub struct RewardPoolFundedEvent {
     pub funder: Address,
     pub amount: i128,
     pub new_balance: i128,
-    pub total_deposited: i128,
 }
 
 /// Event emitted when rewards are successfully distributed.
@@ -264,7 +263,6 @@ impl RewardManager {
                 funder,
                 amount,
                 new_balance,
-                total_deposited,
             },
         );
 
